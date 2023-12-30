@@ -1,0 +1,21 @@
+def proc    1 2 + end
+def macro() 2 1 + end
+def putln() 10 putc end
+
+def main
+    "Hello, world!" puts putln
+    proc macro +    var(local)
+    "global: " puts global. puti " (" puts global puta ")" puts putln
+    "str:    " puts str.    puts " (" puts str    puta ")" puts putln
+    "local:  " puts local.  puti " (" puts local  puta ")" puts putln
+end
+
+type string
+    addr name(data)
+    int  name(count)
+end
+
+1 2 +                var(global)
+"global string hmmm" var(str, string)
+"Runs before main!"  puts putln
+proc macro +         puti putln
