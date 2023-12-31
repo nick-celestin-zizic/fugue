@@ -126,26 +126,26 @@ type_builder_free :: (using tb: Type_Builder) {
 
 runtime_size :: (t: Type) -> u32 {
     if #complete t.type == {
-        case .INT; return 8;
-        case .ADR; return 8;
-        case .PTR; return 8;
-        case .BUF; return runtime_size(t.as.buf.ptr.*) * cast(u32) t.as.buf.count;
-        case .STK; {
-            big_offset : u32 = 0;
-            big_size   : u32 = 0;
-            for t.as.stk {
-                if it.offset >= big_offset {
-                    size := runtime_size(it.type);
-                    if size > big_size {
-                        big_offset = it.offset;
-                        big_size   = size;
-                    }
+    case .INT; return 8;
+    case .ADR; return 8;
+    case .PTR; return 8;
+    case .BUF; return runtime_size(t.as.buf.ptr.*) * cast(u32) t.as.buf.count;
+    case .STK; {
+        big_offset : u32 = 0;
+        big_size   : u32 = 0;
+        for t.as.stk {
+            if it.offset >= big_offset {
+                size := runtime_size(it.type);
+                if size > big_size {
+                    big_offset = it.offset;
+                    big_size   = size;
                 }
             }
-            return big_offset + big_size;
         }
-        case .NAME; assert(false, "internal compiler error: unresolved type name %", t.as.name);
-        case; assert(false); return 0;
+        return big_offset + big_size;
+    }
+    case .NAME; assert(false, "internal compiler error: unresolved type name %", t.as.name);
+    case; assert(false); return 0;
     }
     assert(false);
     return 0;
@@ -164,12 +164,14 @@ Typer :: struct {
 
 typer_free :: (using t: *Typer) {
     fini(heap);
-    dictionary = .{};
+    dictionary   = .{};
+    global_types = .{};
 }
 
 typer_reset :: (using t: *Typer) {
     reset(heap);
-    dictionary = .{};
+    dictionary   = .{allocator=allocator};
+    global_types = .{allocator=allocator};
 }
 
 typer_init :: (using t: *Typer) {
@@ -196,13 +198,11 @@ typecheck_program :: (using program: *Program) -> Type_Table, Flat_Pool, bool {
     // the whole point of resolve_type being its own proc
     // is so that we can do a recursive dynamic programming thing
     // where we keep trying to resolve each type as we encounter a new name
-    // so that we can type recursive types that were defined out of order
+    // so that we can have composed types that were defined out of order
     // for types if !resolve_type(*typer, *types, it_index, it) then F();
     for types table_set(*typer.dictionary, it_index, eval_type(*typer, it));
     
-    // for typer.dictionary   log("% ==> %", it_index, it);
-    // for globals log("% ==> %", it_index, it);
-    
+    // type metaprogram and save global variable types
     locals: Locals; locals.bindings.allocator = typer.allocator;
     type_stack: [..]*Type; type_stack.allocator = temp;
     for *loose if !type_word(*typer, *program.words, *locals, *type_stack, it) F();
@@ -219,7 +219,6 @@ typecheck_program :: (using program: *Program) -> Type_Table, Flat_Pool, bool {
         F();
     }
     
-    log("\n\nMAIN\n\n");
     for *body if !type_word(*typer, *program.words, *locals, *type_stack, it) F();
     if type_stack.count != 0 {
         log_error("unhandled items on the main scope stack! %", type_stack);
@@ -227,32 +226,6 @@ typecheck_program :: (using program: *Program) -> Type_Table, Flat_Pool, bool {
     }
     
     return typer.dictionary, typer.heap, true;
-}
-
-resolve_type :: (using typer: *Typer, name: string, body: []Type_Word) -> bool {
-    _, ok := table_find(*dictionary, name);
-    if ok {
-        log("name % was already resolved!", name);
-        return true;
-    }
-    
-    tb: Type_Builder;
-    for body if it.type == .NAME {
-        body:, ok = table_find(*dictionary, it.as.name);
-        if ok {
-            log("type % was defined previously!", it.as.name);
-            return true;
-        }
-        assert(false, "TODO: %", it.as.name);
-    } else {
-        if !build_type(*tb, it) {
-            type_builder_free(*tb);
-            return false;
-        }
-    }
-    // TODO: check for redecls
-    table_set(*dictionary, name, builder_to_type(typer, *tb));
-    return true;
 }
 
 Locals :: struct {
@@ -267,11 +240,11 @@ type_word :: (
     type_stack  : *[..]*Type,
     word        : *Word
 ) -> bool {
-    assert(typer != null);
-    assert(words != null);
-    // locals can be null for global scope
+    assert(typer      != null);
+    assert(words      != null);
+    assert(locals     != null);
     assert(type_stack != null);
-    assert(word != null);
+    assert(word       != null);
     
     Fail :: (fmt: string, args: ..Any) #expand { assert(false, fmt, ..args); }
     Pop :: () -> *Type #expand {
@@ -284,7 +257,7 @@ type_word :: (
         return a;
     }
     
-    defer log("% ==> %", word, type_stack.*);
+    // defer log("% ==> %", word, type_stack.*);
     
     if #complete word.type == {
     case .PUSH_INT; array_add(type_stack, *TYPE_INT);
@@ -329,9 +302,11 @@ type_word :: (
             t = Pop();
             type[0] = .{type=.PUSH_TYPE, as.push_type=t};
         } else if type.count == 1 && type[0].type == .PUSH_TYPE {
+            // type was already resolved or is simple enough not to need resolution
             t = type[0].as.push_type;
             if !pop_type(type_stack, t) return false;
         } else {
+            // evaluate type expression and cache the type
             t = eval_type(typer, type);
             if !pop_type(type_stack, t) return false;
             type.count = 1;
