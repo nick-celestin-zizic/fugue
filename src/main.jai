@@ -71,6 +71,8 @@ Type_Word :: struct {
 
 main :: () {
     context.print_style.struct_printer = (sb: *String_Builder, v: Any, _: *void) -> bool {
+        // here we "dereference" any pointer types so that we can print the
+        // contents at that address if it is one of the tagged union types
         item: Any;
         info: *Type_Info_Struct;
         if v.type.type == {
@@ -82,11 +84,11 @@ main :: () {
             info = cast(*Type_Info_Struct) item.type;
         }
         case .STRUCT; {
-            if !item.value_pointer return false;
+            if !v.value_pointer return false;
             info = cast(*Type_Info_Struct) v.type;
             item = v;
         }
-        case; return false;
+        case; assert(false, "%", v.type.type); return false;
         }
         
         if info.name == {
@@ -112,11 +114,9 @@ main :: () {
     ast:, ok = parse(src);
     if !ok return;
     
-    log("\n====\nTYPECHECKING:");
     types:, _, ok = typecheck_program(*ast);
     if !ok return;
     
-    log("\n====\nINTERPRETING:");
     ok = interpret_program(*ast);
     if !ok return;
 }
@@ -138,6 +138,15 @@ program_free :: (using program: Program) {
     deinit(*types);
     array_free(loose);
 }
+
+
+// here I defined two versions of the routine that prints any structure with a `type` field
+// of kind Enum and a `as` field of kind Union then first prints `type`, followed by checking
+// if the active tag has a corresponding field in `as` so that we can print the payload.
+// This means that we do to_upper_copy every time we need to print any tagged union. This is not
+// as bad since its allocated with temporary_storage, but I also wrote a version using compile
+// time type information and code generation to bake the string copy. The more kosher thing
+// in Jai would probably be to use runtime type information like the version below.
 
 print_tagged_union :: (sb: *String_Builder, value: Any) {
     tag_type    : *Type_Info_Enum;
@@ -173,22 +182,6 @@ print_tagged_union :: (sb: *String_Builder, value: Any) {
     }
 }
 
-print_tagged_union :: (sb: *String_Builder, u: $T) {
-    print_item_to_builder(sb, u.type);
-    #insert -> string { using QuickStringBuilder();
-        ti_union := type_info(type_of(u.as));
-        ti_enum  := type_info(type_of(u.type));
-        P("if u.type == {\n");
-        for ti_union.members {
-            upper := to_upper_copy(it.name);
-            if array_find(ti_enum.names, upper)
-            then P("    case .%; print_to_builder(sb, \"(\%)\", w.as.%);\n", upper, it.name);
-        }
-        P("}\n");
-        Return();
-    }
-}
-
 // print_tagged_union :: (_sb: *String_Builder, w: $T) { #insert -> string {
 //     sb: String_Builder;
 //     append(*sb, "if w.type == {\n");
@@ -204,6 +197,8 @@ print_tagged_union :: (sb: *String_Builder, u: $T) {
 //     append(*sb, "    case; print_item_to_builder(_sb, w.type);\n}");
 //     return builder_to_string(*sb);
 // } }
+
+// TODO: make all of this work (maybe we shouldn't resolve types eagerly since they can have args?)
 
 // type array
 //     ptr name(data)
