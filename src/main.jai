@@ -1,107 +1,100 @@
+FDict :: Table(string, []FWord);
+TDict :: Table(string, []TWord);
 Program :: struct {
-    words: Table(string, []Word);
-    types: Table(string, []Type_Word);
-    globl: Table(string, []Type_Word);
-    loose: []Word;
+    words: FDict;
+    types: TDict;
+    globl: TDict;
+    loose: []FWord;
+    
+    allocator := Allocator.{proc=pool_allocator_proc};
+    #place allocator; _: void;
+    memory_handle: *Pool;
 }
 
-Word :: struct {
-    type: enum {
-        PUSH_INT;
-        PUSH_STR;
-        
-        ADD;
-        
-        GET;
-        PUT;
-        
-        GET_VAR;
-        PUT_VAR;
-        
-        MACRO;
-        CALL;
-        
-        PUTC;
-        PUTI;
-        PUTS;
-        PUTA;
-        
-        PROC_BEGIN;
-        PROC_END;
-        
-        // IF
-        // ELSE_IF
-        // ELSE
-        // IF_END
-        
-        // temporary instruction that gets resolved later
-        // so that we can order independent declarations
-        NAME;
-    };
-    as: union {
-        push_int : int;
-        push_str : string;
-        call     : string;
-        macro    : struct { name: string; call: Macro; };
-        get_var  : string;
-        put_var  : struct { name: string; type: []Type_Word; }; // after parsing `type` is a word list, after typechecking, `type` is a single PUSH_TYPE instruction, this is dumb but hopefully temporary
-        name     : string;
-    }
-}
+FWord :: Tagged(union {
+    push_int: int;
+    push_str: string;
+    
+    add: void;
+    div: void;
+    get: *FType;
+    put: void;
+    
+    // stack manipulation
+    // (a b)     -> rot(1) -> (b a)
+    // (a b c)   -> rot(2) -> (c a b)
+    // (a b c d) -> rot(3) -> (d a b c)
+    rot: int;
+    
+    // after parsing `type` is a word list, after typechecking
+    // `type` is a single PUSH_TYPE tword, this is dumb but hopefully temporary
+    get_var: string;
+    put_var: struct { name: string; type: []TWord; };
+    
+    macro : struct { name: string; call: Macro; };
+    call  : string;
+    
+    castt: []TWord;
+    
+    putc: void;
+    puti: void;
+    puts: void;
+    puta: void;
+    
+    proc_begin  : void;
+    proc_end    : void;
+    // proc_return : void;
+    
+    // if_begin : int; // index to corresponsing if_end
+    // if_else  : int; // index to corresponsing if_end
+    // if_end   : void;
+    
+    // while_begin : void;
+    // while_do    : int; // index to end
+    // while_end   : int; // index to begin
+    
+    // defer_begin : void;
+    // defer_end   : void;
+    
+    size_of_type: []TWord; // this gets desugared to a PUSH_INT during typechecking
+    // temporary temporary unresolved name
+    // so that we can have order independent declarations
+    name: string;
+});
 
 Macro :: struct {
     args: []string;
-    body: []Word;
+    body: []FWord;
 }
 
-Type_Word :: struct {
-    type: enum {
-        PUSH_TYPE;
-        POINTERIFY;
-        ADD_NAME; // sets the current top Type_Stack_Item's name
-        // temporary name that gets resolved before typechecking
-        NAME;
-    };
-    as: union {
-        push_type: *Type;
-        add_name: string;
+FType :: struct {
+    using data: Tagged(union {
+        stk: Type_Stack; // user defined stack of types
+        num: void; // s64
+        adr: void; // *void
+        ptr: *FType; // pops type and pushes pointer to type
+        buf: struct { ptr: *FType; count: int; } // fixed sized array
+        // unresolved type
         name: string;
+    });
+    const: Const;
+    
+    Const :: struct {
+        type: Type_Stack;
+        data: []u8;
     };
 }
+
+TWord :: Tagged(union {
+    push_type  : *FType;
+    pointerify : void;
+    add_name   : string;
+    name       : string;
+});
 
 main :: () {
-    context.print_style.struct_printer = (sb: *String_Builder, v: Any, _: *void) -> bool {
-        // here we "dereference" any pointer types so that we can print the
-        // contents at that address if it is one of the tagged union types
-        item: Any;
-        info: *Type_Info_Struct;
-        if v.type.type == {
-        case .POINTER; {
-            item.value_pointer = (cast(**void)v.value_pointer).*;
-            if !item.value_pointer return false;
-            item.type = (cast(*Type_Info_Pointer)v.type).pointer_to;
-            if item.type.type != .STRUCT return false;
-            info = cast(*Type_Info_Struct) item.type;
-        }
-        case .STRUCT; {
-            if !v.value_pointer return false;
-            info = cast(*Type_Info_Struct) v.type;
-            item = v;
-        }
-        case; assert(false, "%", v.type.type); return false;
-        }
-        
-        if info.name == {
-        case "Word";      #through;
-        case "Type";      #through;
-        case "Type_Word"; #through;
-        case "Expr";
-            print_tagged_union(sb, item);
-            return true;
-        case; return false;
-        }
-    };
-    
+    context.print_style.default_format_struct.use_long_form_if_more_than_this_many_members = 3;
+    context.print_style.struct_printer = my_struct_printer;
     args := get_command_line_arguments();
     if args.count != 2 {
         log_error("usage: % <input path>", args[0]);
@@ -114,7 +107,7 @@ main :: () {
     ast:, ok = parse(src);
     if !ok return;
     
-    types:, _, ok = typecheck_program(*ast);
+    ok = typecheck_program(*ast);
     if !ok return;
     
     ok = interpret_program(*ast);
@@ -125,7 +118,7 @@ using Basic  :: #import "Basic";
 using String :: #import "String";
 using F      :: #import "File";
 using HT     :: #import "Hash_Table";
-using FP     :: #import "Flat_Pool";
+using P      :: #import "Pool";
 using BA     :: #import "Bucket_Array";
 #load "parser.jai";
 #load "interpreter.jai";
@@ -139,119 +132,101 @@ program_free :: (using program: Program) {
     array_free(loose);
 }
 
+// taggged union
+Tagged :: struct (U: Type) {
+    #insert -> string {
+        sb: String_Builder;
+        append(*sb, "T :: enum {\n");
+        for type_info(U).members print_to_builder(*sb, "    %;\n", to_upper_copy_new(it.name));
+        append(*sb, "};");
+        return builder_to_string(*sb);
+    };
+    type : T;
+    as   : U;
+}
 
-// here I defined two versions of the routine that prints any structure with a `type` field
-// of kind Enum and a `as` field of kind Union then first prints `type`, followed by checking
-// if the active tag has a corresponding field in `as` so that we can print the payload.
-// This means that we do to_upper_copy every time we need to print any tagged union. This is not
-// as bad since its allocated with temporary_storage, but I also wrote a version using compile
-// time type information and code generation to bake the string copy. The more kosher thing
-// in Jai would probably be to use runtime type information like the version below.
-
-print_tagged_union :: (sb: *String_Builder, value: Any) {
-    tag_type    : *Type_Info_Enum;
-    tag_value   : int;
-    union_type  : *Type_Info_Struct;
-    union_value : *void;
-    
-    for (cast(*Type_Info_Struct)value.type).members if it.name == {
-        case "as"; {
-            assert(it.type.type == .STRUCT);
-            union_type  = cast(*Type_Info_Struct) it.type;
-            union_value = value.value_pointer + it.offset_in_bytes;
-        }
-        case "type"; {
-            assert(it.type.type == .ENUM);
-            tag_type  = cast(*Type_Info_Enum) it.type;
-            tag_value = (cast(*int)(value.value_pointer + it.offset_in_bytes)).*;
-        }
+Short_Circuit_Macros :: struct (on_fail: Code) #type_info_none {
+    Check :: (cond: bool, $fmt := "", args: ..Any, cleanup := #code,null, caller := #caller_code) #expand {
+        if !cond Fail(fmt, ..args, cleanup=cleanup, caller=caller);
     }
-    
-    assert(union_type != null);
-    assert(tag_type != null);
-    assert(tag_value >= 0 && tag_value < tag_type.names.count, "Corrupt tag %", tag_value);
-    
-    a: Any = ---; a.type = tag_type; a.value_pointer = *tag_value;
-    print_item_to_builder(sb, a);
-    upper := tag_type.names[tag_value];
-    lower := to_lower_copy(upper);
-    for union_type.members if it.name == lower {
-        a.type = it.type;
-        a.value_pointer = union_value + it.offset_in_bytes;
-        print_to_builder(sb, "(%)", a);
+    Fail :: ($fmt := "", args: ..Any, cleanup := #code,null, caller := #caller_code) #expand {
+        #if fmt log_error("%: %", #procedure_name(), tprint(fmt, ..args));
+        #if cleanup #insert,scope(caller) cleanup;
+        #insert,scope(caller) on_fail;
     }
 }
 
-// print_tagged_union :: (_sb: *String_Builder, w: $T) { #insert -> string {
-//     sb: String_Builder;
-//     append(*sb, "if w.type == {\n");
-//     for type_info(type_of(w.as)).members {
-//         upper := to_upper_copy(it.name);
-//         if array_find(type_info(type_of(w.type)).names, upper) {
-//             print_to_builder(*sb,
-//                 "    case .%; print_to_builder(_sb, \"\%(\%)\", w.type, w.as.%);\n",
-//                 upper, it.name
-//             );
-//         }
-//     }
-//     append(*sb, "    case; print_item_to_builder(_sb, w.type);\n}");
-//     return builder_to_string(*sb);
-// } }
+my_struct_printer :: (sb: *String_Builder, v: Any, _: *void) -> bool {
+    // here we "dereference" any pointer types so that we can print the
+    // contents at that address if it is non-null (you can still cast to *void to get addr)
+    if !v.value_pointer return false;
+    item: Any;
+    info: *Type_Info_Struct;
+    if v.type.type == {
+    case .POINTER; {
+        item.value_pointer = (cast(**void)v.value_pointer).*;
+        if !item.value_pointer return false;
+        item.type = (cast(*Type_Info_Pointer)v.type).pointer_to;
+        if item.type.type != .STRUCT return false;
+        info = cast(*Type_Info_Struct) item.type;
+        append(sb, "*");
+    }
+    case .STRUCT; {
+        if !v.value_pointer return false;
+        info = cast(*Type_Info_Struct) v.type;
+        item = v;
+    }
+    case; assert(false, "%", v.type.type); return false;
+    }
+    
+    if info.name == {
+    case "FType";
+        // don't show constant storage when debug printing FTypes
+        info = cast(*Type_Info_Struct) info.members[0].type;
+        #through;
+    case "Tagged";
+        // extract the tag value
+        tag_type := cast(*Type_Info_Enum) info.members[1].type;
+        val_type := cast(*Type_Info_Struct) info.members[2].type;
+        
+        any: Any = ---;
+        any.value_pointer = item.value_pointer;
+        any.type          = tag_type;
+        print_item_to_builder(sb, any);
+        
+        num := (cast(*int)item.value_pointer).*;
+        if val_type.members[num].type == type_info(void)
+        then return true;
+        
+        any.value_pointer = item.value_pointer + size_of(int);
+        any.type          = val_type.members[num].type;
+        print_to_builder(sb, "(%)", any);
+        return true;
+    case; if v.type.type != .POINTER then return false; else {
+        print_item_to_builder(sb, item);
+        return true;
+    }
+    }
+}
 
-// TODO: make all of this work (maybe we shouldn't resolve types eagerly since they can have args?)
+// TODO: stack manipulation primitives
+// dup  or dup(num > 0)
+// rot  or rot(num > 0)
+// over or over(num > 0)
+// drop or drop(num > 0)
 
-// type array
-//     ptr name(data)
-//     int name(count)
-// end
+// TODO: dynamic memory primitives
+// pools: pcreate/palloc/prealloc/pclear/pdispose
+// heaps: hcreate/halloc/hrealloc/hfree/hclear/hdispose
+// TODO: default allocators
+// macro talloc   temporary_storage palloc   end
+// macro trealloc temporary_storage prealloc end
+// macro tclear   temporary_storage pclear   end
+// macro malloc   global_heap halloc   end
+// macro mrealloc global_heap hrealloc end
+// macro mfree    global_heap hfree    end
 
-// type list
-//     ptr name(data)
-//     int name(count)
-//     int name(capacity)
-// end
-
-// type file
-//     int     name(fd)
-//     u8 list name(contents)
-// end
-
-// push_var(my_tmp_list, int list)
-// def tappend
-//     dup(6) .count .capacity >= if
-//         tmp_list_expand
-//     end
-//     .data .count offset rot !
-//     .count 1 + !count
-// end
-// def tlist_initial_size() 256 end
-// def tlist_expand
-//     dup(3) .data null = if
-//         dup tmp_list_initial_size talloc
-//         rot !data !capacity drop(*)
-//     else
-//         .capacity 2 * dup(2) !capacity talloc
-//         over(2) .data copy
-//     end
-// end
-// type array(t)
-//     t*  name(data)
-//     int name(count)
-// end
-// type list(type)
-//     type* name(data)
-//     int   name(count)
-//     int   name(capacity)
-// end
-// type string
-//     addr name(data)
-//     int  name(count)
-// end
-// type ivec3
-//     int name(x)
-//     int name(y)
-//     int name(z)
-// end
+// TODO: we only need the const mechanism to get enums
 /*
 type tag int
     name(PUSH_INT) const(0)
@@ -262,20 +237,26 @@ type tag int
     name(PUSH_INT) const(1 +)
 end
 */
-// tmp_get_mark defer tmp_set_mark end
-// tmp_list var(found, list(entity*))
-// ...
-// found tmp_list_add
 
+// TODO: this currently doesn't work but should
+/*
+type mlist array
+    int name(capacity)
+end
+type tlist array
+    int name(capacity)
+end
+type plist array
+    int      name(capacity)
+    pool ptr name(pool)
+end
+*/
+
+// TODO: field getters and setters for typestacks
 // var(vec, int name(x) int int name(z) int)
 // 69  vec!x
 // 420 vec!z
 
-// push_var(buf, u8[256])
+// TODO: allocate a zero initialized var on the data stack
+// push_var(buf, u8(256))
 // push_var(len, u32)
-    
-// TODO: stack manipulation primitives
-// dup  or dup(num > 0)
-// rot  or rot(num > 0)
-// over or over(num > 0)
-// drop or drop(num > 0)

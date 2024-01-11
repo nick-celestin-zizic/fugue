@@ -1,34 +1,44 @@
 Procedure :: struct {
-    body: []Word;
-    locals: Table(string, []Type_Word);
+    body: []FWord;
+    locals: Table(string, []TWord);
 }
 
 parse :: (src: string) -> Program, bool {
-    words: Table(string, []Word);
-    types: Table(string, []Type_Word);
-    globl: Table(string, []Type_Word);
-    loose: [..]Word;
+    allocator := () -> Allocator #expand {
+        memory: Pool;
+        a := Allocator.{pool_allocator_proc, get(*memory, size_of(Pool))};
+        (cast(*Pool)a.data).* = memory;
+        return a;
+    }();
     
-    Fail :: (fmt: string = "", args: ..Any) #expand {
-        for words array_free(it);
-        // @Leak for nested words
-        deinit(*words);
-        deinit(*types);
-        array_free(loose);
-        if fmt log_error(fmt, ..args);
-        `return .{}, false;
-    }
+    push_allocator(allocator);
+    
+    words: Table(string, []FWord);
+    types: Table(string, []TWord);
+    globl: Table(string, []TWord);
+    loose: [..]FWord;
+    
+    using Short_Circuit_Macros(#code {
+        // the deref/ref sillyness is because
+        // the pool is allocated in its own memory
+        // but release tries to change some fields
+        // after memory is release and the silly
+        // stuff actually creates a copy Pool on the
+        // stack and we take a pointer to that temp
+        // variable instead of the allocated one
+        release(*(cast(*Pool) allocator.data).*);
+        return .{}, false;
+    }).{};
     
     auto_release_temp();
-    macros  := Table(string, Macro).{allocator=temp};
-    
+    macros := Table(string, Macro).{allocator=temp};
     tokens := Tokenizer.{rhs=src};
     while true {
         expr, eof := parse_expr(*tokens);
         if !expr if eof then break; else Fail();
         if expr.type != .ATOM {
             word, ok := expr_to_word(expr);
-            if !ok Fail();
+            Check(ok);
             array_add(*loose, word);
             if word.type == .PUT_VAR
             then table_set(*globl, word.as.put_var.name, word.as.put_var.type);
@@ -36,7 +46,7 @@ parse :: (src: string) -> Program, bool {
         } else if expr.text == "def" {
             name := parse_expr(*tokens);
             assert(name != null);
-            ws: [..]Word;
+            ws: [..]FWord;
             if #complete name.type == {
             case .ATOM; { // procedure
                 array_add(*ws, .{type=.PROC_BEGIN});
@@ -59,7 +69,7 @@ parse :: (src: string) -> Program, bool {
                 }
                 while true {
                     word, ok := parse_word(*tokens);
-                    if !ok Fail();
+                    Check(ok);
                     if word.type == .PROC_END break;
                     array_add(*ws, word);
                 }
@@ -71,7 +81,7 @@ parse :: (src: string) -> Program, bool {
             defer free_expr(name);
             assert(name != null);
             if name.type != .ATOM assert(false);
-            tws: [..]Type_Word;
+            tws: [..]TWord;
             while true {
                 expr := parse_expr(*tokens);
                 assert(expr != null);
@@ -83,14 +93,14 @@ parse :: (src: string) -> Program, bool {
             table_set(*types, name.text, tws);
         } else {
             word, ok := expr_to_word(expr);
-            if !ok Fail();
+            Check(ok);
             array_add(*loose, word);
             if word.type == .PUT_VAR
             then table_set(*globl, word.as.put_var.name, word.as.put_var.type);
         }
     }
     
-    program := Program.{words, types, globl, loose};
+    program := Program.{words, types, globl, loose, allocator};
     
     // NOTE: for now we do not support nested macros
     for def: macros {
@@ -105,11 +115,11 @@ parse :: (src: string) -> Program, bool {
         case .MACRO; fill_macro_body(*macros, *it.as.macro.call, it.as.macro.name);
     }
     
-    local_scope := Table(string, void).{allocator=temp}; v: void;
+    local_scope := Table(string, []TWord).{allocator=temp};
     for body, name: program.words {
         table_reset(*local_scope);
         for * body if it.type == {
-            case .PUT_VAR; table_set(*local_scope, it.as.put_var.name, v);
+            case .PUT_VAR; table_set(*local_scope, it.as.put_var.name, it.as.put_var.type);
             case .NAME;    if !resolve_name(*program, *local_scope, *macros, it) Fail();
             case .MACRO;   fill_macro_body(*macros, *it.as.macro.call, it.as.macro.name);
         }
@@ -121,7 +131,7 @@ parse :: (src: string) -> Program, bool {
 fill_macro_body :: (macros: *Table(string, Macro), m: *Macro, n: string) {
     if !m.body {
         macro, ok := table_find(macros, n);
-        assert(ok);
+        assert(ok, "%", n);
         assert(m.args.count == 0, "TODO: macro args");
         m.body = macro.body;
     }
@@ -129,9 +139,9 @@ fill_macro_body :: (macros: *Table(string, Macro), m: *Macro, n: string) {
 
 resolve_name :: (
     using program : *Program,
-    locals        : *Table(string, void),
+    locals        : *Table(string, []TWord),
     macros        : *Table(string, Macro),
-    word          : *Word
+    word          : *FWord
 ) -> bool {
     assert(program != null);
     // locals can be null
@@ -147,14 +157,14 @@ resolve_name :: (
     }
     
     if locals {
-        _, ok = table_find(locals, name);
+        ts:, ok = table_find(locals, name);
         if ok {
             word.* = .{type=.GET_VAR, as.get_var=name};
             return true;
         }
     }
     
-    _, ok = table_find(*globl, name);
+    ts:, ok = table_find(*globl, name);
     if ok {
         word.* = .{type=.GET_VAR, as.get_var=name};
         return true;
@@ -171,22 +181,7 @@ resolve_name :: (
     return false;
 }
 
-Short_Circuit_Macros :: struct (on_fail: Code) {
-    Check :: (cond: bool, $fmt := "", args: ..Any, cleanup := #code,null, caller := #caller_code) #expand {
-        if !cond {
-            #if fmt log_error("ERROR %: %", #procedure_name(), tprint(fmt, ..args));
-            #if cleanup #insert,scope(caller) cleanup;
-            #insert,scope(caller) on_fail;
-        }    
-    }
-    Fail :: ($fmt := "", args: ..Any, cleanup := #code,null, caller := #caller_code) #expand {
-        #if fmt log_error("ERROR %: %", #procedure_name(), tprint(fmt, ..args));
-        #if cleanup #insert,scope(caller) cleanup;
-        #insert,scope(caller) on_fail;
-    }
-}
-
-expr_to_word :: (expr: Expr) -> Word, bool {
+expr_to_word :: (expr: Expr) -> FWord, bool {
     using Short_Circuit_Macros(#code return .{}, false).{};
     if #complete expr.type == {
     case .ATOM; if #complete expr.as.atom.type == {
@@ -198,6 +193,7 @@ expr_to_word :: (expr: Expr) -> Word, bool {
             case "puti"; return .{type=.PUTI}, true;
             case "puts"; return .{type=.PUTS}, true;
             case "puta"; return .{type=.PUTA}, true;
+            case "rot";  return .{type=.ROT, as.rot=1}, true;
             case; return .{type=.NAME, as.name=expr.text}, true;
         }
         case .NUM;    return .{type=.PUSH_INT, as.push_int=expr.as.atom.number}, true;
@@ -207,14 +203,24 @@ expr_to_word :: (expr: Expr) -> Word, bool {
         case .OP_PUT; return .{type=.PUT}, true;
         case .OP_SUB; assert(false, "TODO: OP_SUB");
         case .OP_MUL; assert(false, "TODO: OP_MUL");
-        case .OP_DIV; assert(false, "TODO: OP_DIV");
+        case .OP_DIV; return .{type=.DIV}, true;
         case .OP_EXP; assert(false, "TODO: OP_EXP");
         case .PAREN_OPEN;  assert(false, "TODO: PAREN_OPEN");
         case .PAREN_CLOSE; assert(false, "TODO: PAREN_CLOSE");
     }
     case .CALL; using expr.as.call; if head == {
+        case "cast"; {
+            Check(args.count == 1, "cast expects a single argument! got %", args);
+            ts: [..]TWord;
+            for args[0] {
+                t, ok := expr_to_type(it);
+                Check(ok);
+                array_add(*ts, t);
+            }
+            return .{type=.CASTT, as.castt=ts}, true;
+        }
         case "var"; {
-            tws: [..]Type_Word;
+            tws: [..]TWord;
             if args.count == {
             case 1; {
                 Check(args[0].count == 1 && args[0][0].type == .ATOM,
@@ -234,8 +240,18 @@ expr_to_word :: (expr: Expr) -> Word, bool {
             }
             return .{type=.PUT_VAR, as.put_var=.{args[0][0].text, tws}}, true;
         }
+        case "size_of"; {
+            Check(args.count == 1, "size_of expects a single argument! got %", args);
+            ts: [..]TWord;
+            for args[0] {
+                tw, ok := expr_to_type(it);
+                Check(ok, cleanup=array_free(ts));
+                array_add(*ts, tw);
+            }
+            return .{type=.SIZE_OF_TYPE, as.size_of_type=ts}, true;
+        }
         case; {
-            idents: [..]string; // @Leak
+            idents: [..]string;
             for args {
                 if args.count != 1     assert(false);
                 if it[0].type != .ATOM assert(false);
@@ -248,7 +264,7 @@ expr_to_word :: (expr: Expr) -> Word, bool {
     return .{}, false;
 }
 
-expr_to_type :: (expr: Expr) -> Type_Word, bool {
+expr_to_type :: (expr: Expr) -> TWord, bool {
     // log("% ==> %", expr.text, expr);
     if #complete expr.type == {
     case .ATOM; if expr.text == {
@@ -272,7 +288,7 @@ expr_to_type :: (expr: Expr) -> Type_Word, bool {
     return .{}, false;
 }
 
-parse_word :: (tokens: *Tokenizer) -> Word, bool {
+parse_word :: (tokens: *Tokenizer) -> FWord, bool {
     expr := parse_expr(tokens);
     if !expr return .{}, false;
     defer free_expr(expr);
@@ -281,7 +297,7 @@ parse_word :: (tokens: *Tokenizer) -> Word, bool {
     return word, true;
 }
 
-parse_type :: (tokens: *Tokenizer) -> Type_Word, bool {
+parse_type :: (tokens: *Tokenizer) -> TWord, bool {
     expr := parse_expr(tokens);
     if !expr return .{}, false;
     defer free_expr(expr);
@@ -408,12 +424,11 @@ join :: (a: Repr, b: Repr) -> Repr {
 
 Ast  :: []*Expr;
 Expr :: struct {
-    using #as repr: Repr;
-    type : enum  { ATOM; CALL; };
-    as   : union {
+    using data: Tagged(union {
         atom: struct { type: Token_Type; number: int; };
         call: struct { head: string; args: []Ast; };
-    };
+    });
+    using #as repr: Repr;
 }
 
 free_expr :: (expr: *Expr) {
@@ -636,7 +651,7 @@ peek :: (using tokens: *Tokenizer) -> Token {
         Yield(.NUM);
     }
     
-    while NotEof() && is_alpha((token.text.data + token.text.count).*) {
+    while NotEof() && (is_alpha((token.text.data + token.text.count).*) || ((token.text.data + token.text.count).* == #char "_")) {
         peek_char += 1;
         token.text.count += 1;
     }

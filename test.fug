@@ -1,5 +1,5 @@
-def proc    1 2 + end
-def macro() 2 1 + end
+def proc    1 2 +   end
+def macro() 2 1 +   end
 def putln() 10 putc end
 
 def main
@@ -8,6 +8,7 @@ def main
     "global: " puts global. puti " (" puts global puta ")" puts putln
     "str:    " puts str.    puts " (" puts str    puta ")" puts putln
     "local:  " puts local.  puti " (" puts local  puta ")" puts putln
+    cool . . puti ": " puts puti putln
 end
 
 type string
@@ -15,7 +16,15 @@ type string
     int  name(count)
 end
 
+type array
+    ptr name(data)
+    int name(count)
+end
+
+"global string" var(str, string)
+
 1 2 +                var(global)
-"global string hmmm" var(str, string)
 "Runs before main!"  puts putln
 proc macro +         puti putln
+
+"verycoolverycool" cast(int ptr) rot size_of(int) / rot var(cool, int array)

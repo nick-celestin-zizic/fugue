@@ -6,49 +6,48 @@ Variables :: struct {
 Virtual_Machine :: struct {
     regs_top := 0; // index to top register
     vars_top := 0; // index to top of variable buffer
+    // TODO: differentiate local and global scope
     bindings: Table(string, int); // name -> index to start in var_buf
-    ip := 0;
     regs: [32]int;
     vars: [512]u8;
+    // tape: []FWord;
 }
 
 interpret_program :: (program: *Program) -> bool {
     vm: Virtual_Machine;
-    while true {
-        interpret_word(*vm, program, program.loose[vm.ip]);
-        if vm.ip <  0 return false;
-        if vm.ip >= program.loose.count break;
-    }
+    if !interpret_words(*vm, *program.words, program.loose) return false;
     
-    vm.ip = 0;
     words, ok := table_find(*program.words, "main");
     if !ok {
         log_error("you didn't define main!!!");
         return false;
     }
     
-    while true {
-        interpret_word(*vm, program, words[vm.ip]);
-        if vm.ip <  0 return false;
-        if vm.ip >= words.count break;
+    return interpret_words(*vm, *program.words, words);
+}
+
+interpret_words :: (vm: *Virtual_Machine, dict: *FDict, ws: []FWord) -> bool {
+    assert(xx ws);
+    ip := 0;
+    while ip < ws.count {
+        ip = interpret_word(vm, dict, ip, ws);
+        if ip < 0 return false;
     }
-    
     return true;
 }
 
-interpret_word :: (using vm: *Virtual_Machine, program: *Program, word: Word) {
+interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []FWord) -> (new_ip: int) {
+    word := *words[ip];
     // defer {
-    //     r: []int = ---;
-    //     r.data  = regs.data;
-    //     r.count = regs_top;
-    //     log("\n% ==> %\n\n", word, r);
+    //     xs: []int = .{regs_top, xx regs.data};
+    //     log("\n% => %", word.*, xs);
     // }
     if #complete word.type == {
     case .PUSH_INT; {
         if regs_top >= regs.count assert(false, "register stack overflow");
         regs[regs_top] = word.as.push_int;
         regs_top += 1;
-        ip += 1;
+        return ip + 1;
     }
     case .PUSH_STR; {
         if regs_top >= regs.count-1 assert(false, "register stack overflow");
@@ -56,27 +55,44 @@ interpret_word :: (using vm: *Virtual_Machine, program: *Program, word: Word) {
         regs[regs_top]   = word.as.push_str.count - 2;
         regs[regs_top+1] = cast,force(int) word.as.push_str.data + 1;
         regs_top += 2;
-        ip += 1;
+        return ip + 1;
     }
     case .ADD; {
         if regs_top < 2 assert(false, "register stack underflow");
         regs[regs_top-2] = regs[regs_top-2] + regs[regs_top-1];
         regs_top -= 1;
-        ip += 1;
+        return ip + 1;
+    }
+    case .DIV; {
+        if regs_top < 2 assert(false, "register stack underflow");
+        regs[regs_top-2] = regs[regs_top-2] / regs[regs_top-1];
+        regs_top -= 1;
+        return ip + 1;
     }
     case .GET; {
         if regs_top < 1 assert(false, "register stack underflow");
         // TODO: types, register spreading for larger values
-        regs[regs_top-1] = (cast,force(*int) regs[regs_top-1]).*;
-        ip += 1;
+        // assert(false, "types duh %", word.as.get);
+        if word.as.get.type != .STK {
+            regs[regs_top-1] = (cast,force(*int) regs[regs_top-1]).*;         
+        } else {
+            regs_top -= 1;
+            p := cast,force(*u8) regs[regs_top];
+            for < word.as.get.as.stk {
+                regs[regs_top] = (cast(*int)(p+it.offset)).*;
+                // log("got %", regs[regs_top]);
+                regs_top += 1;
+            }
+        }
+        return ip + 1;
     }
-    case .PUT; assert(false, "TODO: %", word);
+    case .PUT; assert(false, "TODO: %", word); return -1;
     case .GET_VAR; {
-        offset, ok := table_find(*bindings, word.as.put_var.name);
+        offset, ok := table_find(*bindings, word.as.get_var);
         assert(ok);
         regs[regs_top] = cast,force(int) *vars[offset];
         regs_top += 1;
-        ip += 1;
+        return ip + 1;
     }
     case .PUT_VAR; {
         if regs_top < 1 assert(false, "register stack underflow");
@@ -88,37 +104,40 @@ interpret_word :: (using vm: *Virtual_Machine, program: *Program, word: Word) {
         // TODO: write a nicer ice
         assert(word.as.put_var.type.count == 1);
         assert(word.as.put_var.type[0].type == .PUSH_TYPE);
-        
-        (cast(*int)(vars.data+vars_top)).* = regs[regs_top-1];
-        vars_top += size_of(int);
-        regs_top -= 1;
-        ip += 1;
+        t := word.as.put_var.type[0].as.push_type;
+        v := vars_top;
+        if t.type != .STK {
+            (cast(*int)(vars.data+vars_top)).* = regs[regs_top-1];
+            vars_top += size_of(int);
+            regs_top -= 1;
+        } else for t.as.stk {
+            (cast(*int)(vars.data+v+it.offset)).* = regs[regs_top-1];
+            vars_top += runtime_size(t);
+            regs_top -= 1;
+        }
+        return ip + 1;
+    }
+    case .ROT; {
+        assert(word.as.rot > 0);
+        if word.as.rot != 1 assert(false, "TODO");
+        if regs_top < 2 assert(false, "register stack underflow");
+        a := regs[regs_top-1];
+        b := regs[regs_top-2];
+        regs[regs_top-1] = b;
+        regs[regs_top-2] = a;
+        return ip + 1;
     }
     case .MACRO; {
-        old_ip := ip;
-        ip = 0;
-        while true {
-            interpret_word(vm, program, word.as.macro.call.body[ip]);
-            if ip <  0 assert(false);
-            if ip >= word.as.macro.call.body.count break;
-        }
-        ip = old_ip+1;
+        if !interpret_words(vm, dict, word.as.macro.call.body) return -1;
+        return ip + 1;
     }
     case .CALL; {
         // log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-        body, ok := table_find(*program.words, word.as.call);
-        assert(ok);
-        old_ip := ip;
-        ip = 0;
-        // log("%", body.count);
-        // assert(false);
-        // TODO: seperate locals
-        while true {
-            interpret_word(vm, program, body[ip]);
-            if ip <  0 assert(false);
-            if ip >= body.count break;
-        }
-        ip = old_ip+1;
+        body, ok := table_find(dict, word.as.call);
+        assert(ok, "TODO: error msg or maybe ice idk rn %", word.as.call);
+        // TODO: local scope and stack traces maybe
+        if !interpret_words(vm, dict, body) return -1;
+        return ip + 1;
     }
     case .PUTC; {
         if regs_top < 1 assert(false, "register stack underflow");
@@ -127,21 +146,21 @@ interpret_word :: (using vm: *Virtual_Machine, program: *Program, word: Word) {
         str.data  = cast(*u8) *regs[regs_top-1];
         write_string(str);
         regs_top -= 1;
-        ip += 1;
+        return ip + 1;
     }
     case .PUTI; {
         if regs_top < 1 assert(false, "register stack underflow");
         i := regs[regs_top-1];
         print("%", i);
         regs_top -= 1;
-        ip += 1;
+        return ip + 1;
     }
     case .PUTA; {
         if regs_top < 1 assert(false, "register stack underflow");
         i := regs[regs_top-1];
         print("%", cast,force(*void) i);
         regs_top -= 1;
-        ip += 1;
+        return ip + 1;
     }
     case .PUTS; {
         if regs_top < 2 assert(false, "register stack underflow");
@@ -151,10 +170,19 @@ interpret_word :: (using vm: *Virtual_Machine, program: *Program, word: Word) {
         regs_top -= 2;
         
         write_string(str);
-        ip += 1;
+        return ip + 1;
     }
-    case .PROC_BEGIN; ip += 1;
-    case .PROC_END;   ip += 1;
-    case .NAME; assert(false, "TODO: %", word);
+    case .PROC_BEGIN; return ip + 1;
+    case .PROC_END;   return ip + 1;
+    case .CASTT;      return ip + 1;
+    case .SIZE_OF_TYPE;
+        assert(false, "internal compiler error: unresolved type size %", word.as.size_of_type);
+        return -1;
+    case .NAME;
+        assert(false, "internal compiler error: unresolved name %", word.as.name);
+        return -1;
+    case;
+        assert(false, "corrupt word type %", cast(int) word.type);
+        return -1;
     }
 }
