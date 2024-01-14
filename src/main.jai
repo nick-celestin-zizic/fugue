@@ -17,6 +17,7 @@ FWord :: Tagged(union {
     
     add: void;
     div: void;
+    gt: void;
     get: *FType;
     put: void;
     
@@ -37,24 +38,14 @@ FWord :: Tagged(union {
     castt: []TWord;
     
     putc: void;
+    putb: void;
     puti: void;
     puts: void;
     puta: void;
     
-    proc_begin  : void;
-    proc_end    : void;
-    // proc_return : void;
-    
-    // if_begin : int; // index to corresponsing if_end
-    // if_else  : int; // index to corresponsing if_end
-    // if_end   : void;
-    
-    // while_begin : void;
-    // while_do    : int; // index to end
-    // while_end   : int; // index to begin
-    
-    // defer_begin : void;
-    // defer_end   : void;
+    // ret: void;
+    // jmp: u32; // index to next index in FWord tape
+    jiz: int; // index to next index in FWord tape
     
     size_of_type: []TWord; // this gets desugared to a PUSH_INT during typechecking
     // temporary temporary unresolved name
@@ -70,9 +61,10 @@ Macro :: struct {
 FType :: struct {
     using data: Tagged(union {
         stk: Type_Stack; // user defined stack of types
-        num: void; // s64
-        adr: void; // *void
-        ptr: *FType; // pops type and pushes pointer to type
+        num: void;       // s64
+        adr: void;       // *void
+        bul: void;       // boolean
+        ptr: *FType;     // pops type and pushes pointer to type
         buf: struct { ptr: *FType; count: int; } // fixed sized array
         // unresolved type
         name: string;
@@ -143,6 +135,12 @@ Tagged :: struct (U: Type) {
     };
     type : T;
     as   : U;
+}
+
+PushState :: (var: Code, val: Code) #expand {
+    old := (#insert var);
+    (#insert var) = (#insert val);
+    `defer (#insert var) = old;
 }
 
 Short_Circuit_Macros :: struct (on_fail: Code) #type_info_none {

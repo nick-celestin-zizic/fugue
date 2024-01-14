@@ -1,6 +1,7 @@
 // TODO: floats
 TYPE_INT :: FType.{type=.NUM}; // TODO: signed/unsigned and smaller sized integers
 TYPE_ADR :: FType.{type=.ADR};
+TYPE_BUL :: FType.{type=.BUL};
 
 make_type_pointer :: (using t: *Typer, c: FType.Const, ptr_to: *FType) -> *FType {
     // TODO: pointer type caches in typer
@@ -102,6 +103,7 @@ runtime_size :: (t: FType) -> u32 {
     case .NUM; return 8;
     case .ADR; return 8;
     case .PTR; return 8;
+    case .BUL; return 8;
     case .BUF; return runtime_size(t.as.buf.ptr.*) * cast(u32) t.as.buf.count;
     case .STK; {
         big_offset : u32 = 0;
@@ -222,6 +224,12 @@ type_word :: (
     // defer log("% ==> %", word.*, type_stack.*);
     
     if #complete word.type == {
+    case .GT; {
+        a := Pop(); Check(a.type == .NUM, "expected int but got %", a);
+        b := Pop(); Check(b.type == .NUM, "expected int but got %", b);
+        array_add(type_stack, *TYPE_BUL);
+    }
+    case .JIZ;  a := Pop(); Check(a.type == .BUL, "expected bool but got %", a);
     case .PUSH_INT; array_add(type_stack, *TYPE_INT);
     case .PUSH_STR; array_add(type_stack, *TYPE_INT, *TYPE_ADR);
     case .ADD; #through; case .DIV; {
@@ -306,6 +314,7 @@ type_word :: (
         for *body Check(type_word(typer, words, locals, type_stack, it));
     }
     case .PUTC; a := Pop(); Check(a.type == .NUM, "expected int but got %", a);
+    case .PUTB; a := Pop(); Check(a.type == .BUL, "expected bool but got %", a);
     case .PUTI; a := Pop(); Check(a.type == .NUM, "expected int but got %", a);
     case .PUTA; a := Pop(); Check(a.type == .ADR || a.type == .PTR, "expected addr or ptr but got %", a);
     case .PUTS; {
@@ -318,8 +327,6 @@ type_word :: (
         Check(t != null);
         array_add(type_stack, t);
     }
-    case .PROC_BEGIN;
-    case .PROC_END;
     case .NAME; assert(false, "internal compiler error: unresolved name %", word.as.name);
     }
     return true;
@@ -354,11 +361,12 @@ push_type :: (type_stack: *[..]*FType, type: *FType) -> bool {
         for < type.as.stk if !push_type(type_stack, it.type) return false;
         return true;
     }
+    case .NAME; assert(false, "internal compiler error: unresolved name %", type.as.name);
+    case .BUF; assert(false, "TODO: %", type);
+    case .BUL; array_add(type_stack, type); return true;
     case .NUM; array_add(type_stack, type); return true;
     case .ADR; array_add(type_stack, type); return true;
     case .PTR; array_add(type_stack, type); return true;
-    case .BUF; assert(false, "TODO: %", type);
-    case .NAME; assert(false, "internal compiler error: unresolved name %", type.as.name);
     }
     return true;
 }

@@ -3,11 +3,40 @@ Procedure :: struct {
     locals: Table(string, []TWord);
 }
 
+Block :: struct {
+    Tag :: enum {
+        PROC;
+        MACRO;
+        IF;
+        WHILE;
+    }
+    type  : Tag;
+    index : int;
+}
+
+Parser :: struct {
+    blocks: [..]Block;
+    tape: *[]FWord;
+    tape_index: int;
+}
+
+match_end :: (blocks: []Block, type: Block.Tag) -> bool {
+    if !blocks {
+        log_error("unmatched end");
+        return false;
+    }
+    if blocks[blocks.count-1].type != type {
+        log_error("expected to end %, but ended % instead", blocks[blocks.count-1], type);
+        return false;
+    }
+    return true;
+}
+
 parse :: (src: string) -> Program, bool {
     allocator := () -> Allocator #expand {
-        memory: Pool;
-        a := Allocator.{pool_allocator_proc, get(*memory, size_of(Pool))};
-        (cast(*Pool)a.data).* = memory;
+        bootstrap: Pool;
+        a := Allocator.{pool_allocator_proc, get(*bootstrap, size_of(Pool))};
+        (cast(*Pool)a.data).* = bootstrap;
         return a;
     }();
     
@@ -26,18 +55,20 @@ parse :: (src: string) -> Program, bool {
         // stuff actually creates a copy Pool on the
         // stack and we take a pointer to that temp
         // variable instead of the allocated one
-        release(*(cast(*Pool) allocator.data).*);
+        p := (cast(*Pool) allocator.data).*;
+        release(*p);
         return .{}, false;
     }).{};
     
     auto_release_temp();
+    parser := Parser.{tape=*loose, blocks.allocator=temp};
     macros := Table(string, Macro).{allocator=temp};
     tokens := Tokenizer.{rhs=src};
     while true {
         expr, eof := parse_expr(*tokens);
         if !expr if eof then break; else Fail();
         if expr.type != .ATOM {
-            word, ok := expr_to_word(expr);
+            word, ok := expr_to_word(*parser, expr);
             Check(ok);
             array_add(*loose, word);
             if word.type == .PUT_VAR
@@ -45,20 +76,36 @@ parse :: (src: string) -> Program, bool {
             // log("%", word);
         } else if expr.text == "def" {
             name := parse_expr(*tokens);
-            assert(name != null);
+            Check(name != null);
+            Check(parser.blocks.count == 0, "all word definitions must be in global scope!");
             ws: [..]FWord;
             if #complete name.type == {
             case .ATOM; { // procedure
-                array_add(*ws, .{type=.PROC_BEGIN});
+                array_add(*parser.blocks, .{type=.PROC});
+                PushState(parser.tape, *ws);
+                PushState(parser.tape_index, 0);
                 while true {
-                    word, ok := parse_word(*tokens);
-                    if !ok { array_free(ws); Fail(); }
-                    array_add(*ws, word);
-                    if word.type == .PROC_END break;
+                    word, ok := parse_word(*parser, *tokens);
+                    Check(ok);
+                    // TODO: parser should have a context stack for blocks and stuff
+                    if word.type == .NAME && word.as.name == "end" {
+                        Check(match_end(parser.blocks, .PROC));
+                        parser.blocks.count -= 1;
+                        break;
+                    }
+                    // if word.type == .PROC_END break;
+                    if !(word.type == .NAME && !word.as.name) {
+                        parser.tape_index += 1;
+                        array_add(*ws, word);
+                    }
                 }
                 table_set(*words, name.text, ws);
             }
             case .CALL; { // macro
+                Check(parser.blocks.count == 0, "all macro definitions must be in global scope!");
+                array_add(*parser.blocks, .{type=.MACRO});
+                PushState(parser.tape, *ws);
+                PushState(parser.tape_index, 0);
                 args: [..]string; args.allocator = temp;
                 for name.as.call.args {
                     if it.count   != 1
@@ -68,10 +115,19 @@ parse :: (src: string) -> Program, bool {
                     array_add(*args, it[0].text);
                 }
                 while true {
-                    word, ok := parse_word(*tokens);
+                    word, ok := parse_word(*parser, *tokens);
                     Check(ok);
-                    if word.type == .PROC_END break;
-                    array_add(*ws, word);
+                    // TODO: parser should have a context stack for blocks and stuff
+                    if word.type == .NAME && word.as.name == "end" {
+                        Check(match_end(parser.blocks, .MACRO));
+                        parser.blocks.count -= 1;
+                        break;
+                    }
+                    // if word.type == .PROC_END break;
+                    if !(word.type == .NAME && !word.as.name) {
+                        parser.tape_index += 1;
+                        array_add(*ws, word);
+                    }
                 }
                 table_set(*macros, name.as.call.head, .{args, ws});
             }
@@ -92,13 +148,17 @@ parse :: (src: string) -> Program, bool {
             }
             table_set(*types, name.text, tws);
         } else {
-            word, ok := expr_to_word(expr);
+            word, ok := expr_to_word(*parser, expr);
             Check(ok);
+            parser.tape_index += 1;
             array_add(*loose, word);
             if word.type == .PUT_VAR
             then table_set(*globl, word.as.put_var.name, word.as.put_var.type);
         }
     }
+    
+    // TODO: really need to start making these errors comprehendable at some point
+    Check(parser.blocks.count == 0, "missing % end statements!", parser.blocks.count);
     
     program := Program.{words, types, globl, loose, allocator};
     
@@ -120,7 +180,7 @@ parse :: (src: string) -> Program, bool {
         table_reset(*local_scope);
         for * body if it.type == {
             case .PUT_VAR; table_set(*local_scope, it.as.put_var.name, it.as.put_var.type);
-            case .NAME;    if !resolve_name(*program, *local_scope, *macros, it) Fail();
+            case .NAME;    Check(resolve_name(*program, *local_scope, *macros, it));
             case .MACRO;   fill_macro_body(*macros, *it.as.macro.call, it.as.macro.name);
         }
     }
@@ -177,23 +237,46 @@ resolve_name :: (
         return true;
     }
     
-    assert(false, "TODO %", name);
+    log_error("unkown word %", name);
     return false;
 }
 
-expr_to_word :: (expr: Expr) -> FWord, bool {
+expr_to_word :: (parser: *Parser, expr: Expr) -> FWord, bool {
     using Short_Circuit_Macros(#code return .{}, false).{};
     if #complete expr.type == {
     case .ATOM; if #complete expr.as.atom.type == {
-        case .ERR; assert(false, "TODO: ERR");
-        case .EOF; assert(false, "TODO: EOF");
+        case .ERR; assert(false, "TODO: ERR"); Fail();
+        case .EOF; assert(false, "TODO: EOF"); Fail();
         case .SYM; if expr.text == {
-            case "end";  return .{type=.PROC_END}, true;
+            // TODO: context stack stuff to differentiate different kinds of ends
             case "putc"; return .{type=.PUTC}, true;
+            case "putb"; return .{type=.PUTB}, true;
             case "puti"; return .{type=.PUTI}, true;
             case "puts"; return .{type=.PUTS}, true;
             case "puta"; return .{type=.PUTA}, true;
+            
             case "rot";  return .{type=.ROT, as.rot=1}, true;
+            case "if"; {
+                array_add(*parser.blocks, .{.IF, parser.tape_index});
+                return .{type=.JIZ}, true;
+            }
+            case "end";  {
+                Check(parser.blocks.count != 0, "unmatched end!");
+                b := parser.blocks[parser.blocks.count-1];
+                if #complete b.type == {
+                case .IF; {
+                    parser.blocks.count -= 1;
+                    assert(parser.tape.*[b.index].type == .JIZ);
+                    parser.tape.*[b.index].as.jiz = parser.tape_index;
+                    return .{type=.NAME}, true;
+                }
+                case .WHILE; assert(false); Fail();
+                case .PROC;  return .{type=.NAME, as.name=expr.text}, true;
+                case .MACRO; return .{type=.NAME, as.name=expr.text}, true;
+                case; assert(false, "%", b); Fail();
+                }
+                
+            }
             case; return .{type=.NAME, as.name=expr.text}, true;
         }
         case .NUM;    return .{type=.PUSH_INT, as.push_int=expr.as.atom.number}, true;
@@ -201,12 +284,14 @@ expr_to_word :: (expr: Expr) -> FWord, bool {
         case .OP_ADD; return .{type=.ADD}, true;
         case .OP_GET; return .{type=.GET}, true;
         case .OP_PUT; return .{type=.PUT}, true;
-        case .OP_SUB; assert(false, "TODO: OP_SUB");
-        case .OP_MUL; assert(false, "TODO: OP_MUL");
+        case .OP_GT;  return .{type=.GT},  true;
+        case .OP_SUB; assert(false, "TODO: OP_SUB"); Fail();
+        case .OP_MUL; assert(false, "TODO: OP_MUL"); Fail();
         case .OP_DIV; return .{type=.DIV}, true;
-        case .OP_EXP; assert(false, "TODO: OP_EXP");
-        case .PAREN_OPEN;  assert(false, "TODO: PAREN_OPEN");
-        case .PAREN_CLOSE; assert(false, "TODO: PAREN_CLOSE");
+        case .OP_EXP; assert(false, "TODO: OP_EXP"); Fail();
+        case .PAREN_OPEN;  assert(false, "TODO: PAREN_OPEN");  Fail();
+        case .PAREN_CLOSE; assert(false, "TODO: PAREN_CLOSE"); Fail();
+        case; assert(false); Fail();
     }
     case .CALL; using expr.as.call; if head == {
         case "cast"; {
@@ -260,7 +345,10 @@ expr_to_word :: (expr: Expr) -> FWord, bool {
             return .{type=.MACRO, as.macro=.{head, .{idents, .[]}}}, true;
         }
     }
+    case; assert(false); Fail();
     }
+    
+    assert(false);
     return .{}, false;
 }
 
@@ -288,11 +376,11 @@ expr_to_type :: (expr: Expr) -> TWord, bool {
     return .{}, false;
 }
 
-parse_word :: (tokens: *Tokenizer) -> FWord, bool {
+parse_word :: (parser: *Parser, tokens: *Tokenizer) -> FWord, bool {
     expr := parse_expr(tokens);
     if !expr return .{}, false;
     defer free_expr(expr);
-    word, ok := expr_to_word(expr);
+    word, ok := expr_to_word(parser, expr);
     if !ok return .{}, false;
     return word, true;
 }
@@ -509,6 +597,7 @@ Token_Type :: enum {
     OP_MUL :: #char "*";
     OP_DIV :: #char "/";
     OP_EXP :: #char "^";
+    OP_GT  :: #char ">";
 }
 
 is_op :: (char: int) -> Token_Type { #insert -> string { // OP_* | ERR

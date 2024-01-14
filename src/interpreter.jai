@@ -43,6 +43,10 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
     //     log("\n% => %", word.*, xs);
     // }
     if #complete word.type == {
+    case .JIZ; {
+        if regs_top < 1 assert(false, "register stack underflow");
+        return ifx regs[regs_top-1] == 0 then ip + 1 else word.as.jiz;
+    }
     case .PUSH_INT; {
         if regs_top >= regs.count assert(false, "register stack overflow");
         regs[regs_top] = word.as.push_int;
@@ -66,6 +70,12 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
     case .DIV; {
         if regs_top < 2 assert(false, "register stack underflow");
         regs[regs_top-2] = regs[regs_top-2] / regs[regs_top-1];
+        regs_top -= 1;
+        return ip + 1;
+    }
+    case .GT; {
+        if regs_top < 2 assert(false, "register stack underflow");
+        regs[regs_top-2] = cast(int) (regs[regs_top-2] > regs[regs_top-1]);
         regs_top -= 1;
         return ip + 1;
     }
@@ -155,6 +165,13 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
         regs_top -= 1;
         return ip + 1;
     }
+    case .PUTB; {
+        if regs_top < 1 assert(false, "register stack underflow");
+        i := regs[regs_top-1];
+        write_string(ifx i == 0 then "false" else "true");
+        regs_top -= 1;
+        return ip + 1;
+    }
     case .PUTA; {
         if regs_top < 1 assert(false, "register stack underflow");
         i := regs[regs_top-1];
@@ -172,8 +189,6 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
         write_string(str);
         return ip + 1;
     }
-    case .PROC_BEGIN; return ip + 1;
-    case .PROC_END;   return ip + 1;
     case .CASTT;      return ip + 1;
     case .SIZE_OF_TYPE;
         assert(false, "internal compiler error: unresolved type size %", word.as.size_of_type);
