@@ -3,7 +3,10 @@ def macro() 2 1 +   end
 def putln() 10 putc end
 
 def main
-    1 2 > if "wow" puts putln end
+    0 while dup dup 5 < do
+        puti putln 1 +
+    end
+    5 > if "wow" puts putln end
     
     "Hello, world!" puts putln
     proc macro +    var(local)

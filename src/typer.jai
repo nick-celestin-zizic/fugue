@@ -224,12 +224,16 @@ type_word :: (
     // defer log("% ==> %", word.*, type_stack.*);
     
     if #complete word.type == {
+    case .LT; #through;
     case .GT; {
         a := Pop(); Check(a.type == .NUM, "expected int but got %", a);
         b := Pop(); Check(b.type == .NUM, "expected int but got %", b);
         array_add(type_stack, *TYPE_BUL);
     }
-    case .JIZ;  a := Pop(); Check(a.type == .BUL, "expected bool but got %", a);
+    // TODO: we need a way to check that the src and dst for the jumps have the same type stack
+    case .JMP;
+    case .JIZ; a := Pop(); Check(a.type == .BUL, "expected bool but got %", a);
+    
     case .PUSH_INT; array_add(type_stack, *TYPE_INT);
     case .PUSH_STR; array_add(type_stack, *TYPE_INT, *TYPE_ADR);
     case .ADD; #through; case .DIV; {
@@ -302,6 +306,11 @@ type_word :: (
         b := Pop();
         push_type(type_stack, a);
         push_type(type_stack, b);
+    }
+    case .DUP; {
+        assert(word.as.dup > 0);
+        t := Pop();
+        for 0..word.as.dup push_type(type_stack, t);
     }
     case .MACRO; using word.as.macro; {
         assert(call.body.count != 0, "internal compiler error: unresolved macro %", name);

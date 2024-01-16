@@ -27,7 +27,7 @@ interpret_program :: (program: *Program) -> bool {
 }
 
 interpret_words :: (vm: *Virtual_Machine, dict: *FDict, ws: []FWord) -> bool {
-    assert(xx ws);
+    if !ws return true;
     ip := 0;
     while ip < ws.count {
         ip = interpret_word(vm, dict, ip, ws);
@@ -40,12 +40,14 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
     word := *words[ip];
     // defer {
     //     xs: []int = .{regs_top, xx regs.data};
-    //     log("\n% => %", word.*, xs);
+    //     log("\n%: % => %", ip, word.*, xs);
     // }
     if #complete word.type == {
+    case .JMP; return word.as.jmp;
     case .JIZ; {
         if regs_top < 1 assert(false, "register stack underflow");
-        return ifx regs[regs_top-1] == 0 then ip + 1 else word.as.jiz;
+        regs_top -= 1;
+        return ifx regs[regs_top] == 0 then word.as.jiz else ip + 1;
     }
     case .PUSH_INT; {
         if regs_top >= regs.count assert(false, "register stack overflow");
@@ -76,6 +78,12 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
     case .GT; {
         if regs_top < 2 assert(false, "register stack underflow");
         regs[regs_top-2] = cast(int) (regs[regs_top-2] > regs[regs_top-1]);
+        regs_top -= 1;
+        return ip + 1;
+    }
+    case .LT; {
+        if regs_top < 2 assert(false, "register stack underflow");
+        regs[regs_top-2] = cast(int) (regs[regs_top-2] < regs[regs_top-1]); 
         regs_top -= 1;
         return ip + 1;
     }
@@ -135,6 +143,19 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
         b := regs[regs_top-2];
         regs[regs_top-1] = b;
         regs[regs_top-2] = a;
+        return ip + 1;
+    }
+    case .DUP; {
+        assert(word.as.dup > 0);
+        if regs_top < 1 assert(false, "register stack underflow");
+        a := regs[regs_top-1];
+        // assert(false, "%", word.as.dup);
+        for 1..word.as.dup {
+            // log("%", it);
+            if regs_top >= regs.count assert(false, "register stack overflow");
+            regs[regs_top] = a;
+            regs_top += 1;
+        }
         return ip + 1;
     }
     case .MACRO; {

@@ -11,6 +11,8 @@ Program :: struct {
     memory_handle: *Pool;
 }
 
+// 0 while 10 < do dup puti putln 1 + end
+// pre label(pre) cond jiz(end) body jmp(pre) label(end)
 FWord :: Tagged(union {
     push_int: int;
     push_str: string;
@@ -18,6 +20,7 @@ FWord :: Tagged(union {
     add: void;
     div: void;
     gt: void;
+    lt: void;
     get: *FType;
     put: void;
     
@@ -26,6 +29,7 @@ FWord :: Tagged(union {
     // (a b c)   -> rot(2) -> (c a b)
     // (a b c d) -> rot(3) -> (d a b c)
     rot: int;
+    dup: int;
     
     // after parsing `type` is a word list, after typechecking
     // `type` is a single PUSH_TYPE tword, this is dumb but hopefully temporary
@@ -44,7 +48,7 @@ FWord :: Tagged(union {
     puta: void;
     
     // ret: void;
-    // jmp: u32; // index to next index in FWord tape
+    jmp: int; // index to next index in FWord tape
     jiz: int; // index to next index in FWord tape
     
     size_of_type: []TWord; // this gets desugared to a PUSH_INT during typechecking

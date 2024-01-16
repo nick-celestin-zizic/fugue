@@ -10,8 +10,9 @@ Block :: struct {
         IF;
         WHILE;
     }
-    type  : Tag;
-    index : int;
+    type     : Tag;
+    index    : int;
+    do_index : int; // additional index used as a label for a do in a while
 }
 
 Parser :: struct {
@@ -55,6 +56,7 @@ parse :: (src: string) -> Program, bool {
         // stuff actually creates a copy Pool on the
         // stack and we take a pointer to that temp
         // variable instead of the allocated one
+        assert(false);
         p := (cast(*Pool) allocator.data).*;
         release(*p);
         return .{}, false;
@@ -179,9 +181,9 @@ parse :: (src: string) -> Program, bool {
     for body, name: program.words {
         table_reset(*local_scope);
         for * body if it.type == {
-            case .PUT_VAR; table_set(*local_scope, it.as.put_var.name, it.as.put_var.type);
-            case .NAME;    Check(resolve_name(*program, *local_scope, *macros, it));
-            case .MACRO;   fill_macro_body(*macros, *it.as.macro.call, it.as.macro.name);
+        case .PUT_VAR; table_set(*local_scope, it.as.put_var.name, it.as.put_var.type);
+        case .NAME;    Check(resolve_name(*program, *local_scope, *macros, it));
+        case .MACRO;   fill_macro_body(*macros, *it.as.macro.call, it.as.macro.name);
         }
     }
     
@@ -256,8 +258,20 @@ expr_to_word :: (parser: *Parser, expr: Expr) -> FWord, bool {
             case "puta"; return .{type=.PUTA}, true;
             
             case "rot";  return .{type=.ROT, as.rot=1}, true;
+            case "dup";  return .{type=.DUP, as.dup=1}, true;
+            
             case "if"; {
-                array_add(*parser.blocks, .{.IF, parser.tape_index});
+                array_add(*parser.blocks, .{.IF, parser.tape_index, -1});
+                return .{type=.JIZ}, true;
+            }
+            case "while"; {
+                array_add(*parser.blocks, .{.WHILE, parser.tape_index, -1});
+                return .{type=.NAME}, true;
+            }
+            case "do"; {
+                Check(parser.blocks.count > 0 && parser.blocks[parser.blocks.count-1].type == .WHILE,
+                      "'do' can only be used inside a while loop!");
+                parser.blocks[parser.blocks.count-1].do_index = parser.tape_index;
                 return .{type=.JIZ}, true;
             }
             case "end";  {
@@ -268,9 +282,17 @@ expr_to_word :: (parser: *Parser, expr: Expr) -> FWord, bool {
                     parser.blocks.count -= 1;
                     assert(parser.tape.*[b.index].type == .JIZ);
                     parser.tape.*[b.index].as.jiz = parser.tape_index;
+                    // NOTE: sometimes we don't want to add any words to the tape
+                    //       so we denote a name statement with no name as a word
+                    //       that should not be appended
                     return .{type=.NAME}, true;
                 }
-                case .WHILE; assert(false); Fail();
+                case .WHILE; {
+                    parser.blocks.count -= 1;
+                    assert(parser.tape.*[b.do_index].type == .JIZ);
+                    parser.tape.*[b.do_index].as.jiz = parser.tape_index+1;
+                    return .{type=.JMP,  as.jmp=b.index}, true;
+                }
                 case .PROC;  return .{type=.NAME, as.name=expr.text}, true;
                 case .MACRO; return .{type=.NAME, as.name=expr.text}, true;
                 case; assert(false, "%", b); Fail();
@@ -285,6 +307,7 @@ expr_to_word :: (parser: *Parser, expr: Expr) -> FWord, bool {
         case .OP_GET; return .{type=.GET}, true;
         case .OP_PUT; return .{type=.PUT}, true;
         case .OP_GT;  return .{type=.GT},  true;
+        case .OP_LT;  return .{type=.LT},  true;
         case .OP_SUB; assert(false, "TODO: OP_SUB"); Fail();
         case .OP_MUL; assert(false, "TODO: OP_MUL"); Fail();
         case .OP_DIV; return .{type=.DIV}, true;
@@ -377,8 +400,12 @@ expr_to_type :: (expr: Expr) -> TWord, bool {
 }
 
 parse_word :: (parser: *Parser, tokens: *Tokenizer) -> FWord, bool {
-    expr := parse_expr(tokens);
-    if !expr return .{}, false;
+    expr, eof := parse_expr(tokens);
+    // log("!!! % %", expr.type, eof);
+    if !expr {
+        if eof log_error("unexpected end of file %", parser.*);
+        return .{}, false;
+    }
     defer free_expr(expr);
     word, ok := expr_to_word(parser, expr);
     if !ok return .{}, false;
@@ -397,6 +424,8 @@ parse_type :: (tokens: *Tokenizer) -> TWord, bool {
 parse_expr :: (tokens: *Tokenizer) -> *Expr, eof: bool {
     expr  :  *Expr;
     token := next(tokens);
+    // log("%: %", token.text, token.type);
+    // assert(token.text.count != 0);
     
     if is_atom(token.type) || is_op(token.type) expr = make_atom(token);
     else if token.type == {
@@ -598,6 +627,7 @@ Token_Type :: enum {
     OP_DIV :: #char "/";
     OP_EXP :: #char "^";
     OP_GT  :: #char ">";
+    OP_LT  :: #char "<";
 }
 
 is_op :: (char: int) -> Token_Type { #insert -> string { // OP_* | ERR
