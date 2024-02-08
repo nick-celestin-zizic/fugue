@@ -1,0 +1,28 @@
+def main
+    0 while dup dup 5 < do
+        puti 32 putc 1 +
+    end
+    var(local) drop
+    
+    1 2 + var(global)
+    "Hello, world!" puts 10 putc
+    "global: " puts global. puti " (" puts global puta ")" puts 10 putc
+    "str:    " puts str.    puts " (" puts str    puta ")" puts 10 putc
+    "local:  " puts local.  puti " (" puts local  puta ")" puts 10 putc
+    cool . . puti ": " puts puti ", " puts puti 10 putc
+end
+
+type string
+    addr name(data)
+    int  name(count)
+end
+
+type array
+    ptr name(data)
+    int name(count)
+    int name(capacity)
+end
+
+"global string" var(str, string)
+"Runs before main!"  puts 10 putc
+0 "verycoolverycool" cast(int ptr) rot size_of(int) / rot var(cool, int array)

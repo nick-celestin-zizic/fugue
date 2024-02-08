@@ -23,44 +23,26 @@ Parser :: struct {
 
 match_end :: (blocks: []Block, type: Block.Tag) -> bool {
     if !blocks {
-        log_error("unmatched end");
+        log_error("unmatched end %", blocks);
         return false;
     }
     if blocks[blocks.count-1].type != type {
-        log_error("expected to end %, but ended % instead", blocks[blocks.count-1], type);
+        log_error("expected to end %, but ended % instead %", blocks[blocks.count-1], type, blocks);
         return false;
     }
     return true;
 }
 
 parse :: (src: string) -> Program, bool {
-    allocator := () -> Allocator #expand {
-        bootstrap: Pool;
-        a := Allocator.{pool_allocator_proc, get(*bootstrap, size_of(Pool))};
-        (cast(*Pool)a.data).* = bootstrap;
-        return a;
-    }();
-    
-    push_allocator(allocator);
-    
     words: Table(string, []FWord);
     types: Table(string, []TWord);
     globl: Table(string, []TWord);
     loose: [..]FWord;
     
-    using Short_Circuit_Macros(#code {
-        // the deref/ref sillyness is because
-        // the pool is allocated in its own memory
-        // but release tries to change some fields
-        // after memory is release and the silly
-        // stuff actually creates a copy Pool on the
-        // stack and we take a pointer to that temp
-        // variable instead of the allocated one
-        assert(false);
-        p := (cast(*Pool) allocator.data).*;
-        release(*p);
-        return .{}, false;
-    }).{};
+    using Short_Circuit_Macros(#code { assert(false); return .{}, false; }).{};
+    expressions.block_allocator = context.allocator;
+    // remember_allocators(*expressions);
+    defer release(*expressions);
     
     auto_release_temp();
     parser := Parser.{tape=*loose, blocks.allocator=temp};
@@ -69,6 +51,7 @@ parse :: (src: string) -> Program, bool {
     while true {
         expr, eof := parse_expr(*tokens);
         if !expr if eof then break; else Fail();
+        defer free_expr(expr);
         if expr.type != .ATOM {
             word, ok := expr_to_word(*parser, expr);
             Check(ok);
@@ -77,8 +60,9 @@ parse :: (src: string) -> Program, bool {
             then table_set(*globl, word.as.put_var.name, word.as.put_var.type);
             // log("%", word);
         } else if expr.text == "def" {
-            name := parse_expr(*tokens);
+            name := parse_expr(*tokens); 
             Check(name != null);
+            defer free_expr(name);
             Check(parser.blocks.count == 0, "all word definitions must be in global scope!");
             ws: [..]FWord;
             if #complete name.type == {
@@ -87,10 +71,21 @@ parse :: (src: string) -> Program, bool {
                 PushState(parser.tape, *ws);
                 PushState(parser.tape_index, 0);
                 while true {
-                    word, ok := parse_word(*parser, *tokens);
+                    expr, eof := parse_expr(*tokens);
+                    if eof {
+                        Check(match_end(parser.blocks, .PROC));
+                        parser.blocks.count -= 1;
+                        break;
+                    }
+                    Check(expr != null);
+                    defer free_expr(expr);
+                    
+                    word, ok := expr_to_word(*parser, expr);
                     Check(ok);
-                    // TODO: parser should have a context stack for blocks and stuff
-                    if word.type == .NAME && word.as.name == "end" {
+                    
+                    // REPORT: Short circuit && does not work!?!?!?!??!?!?!?!?
+                    // but only when it encounters a PUSH_INT(3) instruction??!?!?!?!?!?
+                    if word.type == .NAME if word.as.name == "end" {
                         Check(match_end(parser.blocks, .PROC));
                         parser.blocks.count -= 1;
                         break;
@@ -101,7 +96,8 @@ parse :: (src: string) -> Program, bool {
                         array_add(*ws, word);
                     }
                 }
-                table_set(*words, name.text, ws);
+                
+                table_add(*words, name.text, ws);
             }
             case .CALL; { // macro
                 Check(parser.blocks.count == 0, "all macro definitions must be in global scope!");
@@ -143,6 +139,7 @@ parse :: (src: string) -> Program, bool {
             while true {
                 expr := parse_expr(*tokens);
                 assert(expr != null);
+                defer free_expr(expr);
                 if expr.type == .ATOM && expr.text == "end" break;
                 tw, ok := expr_to_type(expr);
                 assert(ok);
@@ -152,8 +149,10 @@ parse :: (src: string) -> Program, bool {
         } else {
             word, ok := expr_to_word(*parser, expr);
             Check(ok);
-            parser.tape_index += 1;
-            array_add(*loose, word);
+            if !(word.type == .NAME && !word.as.name) {
+                parser.tape_index += 1;
+                array_add(*loose, word);
+            }
             if word.type == .PUT_VAR
             then table_set(*globl, word.as.put_var.name, word.as.put_var.type);
         }
@@ -162,7 +161,7 @@ parse :: (src: string) -> Program, bool {
     // TODO: really need to start making these errors comprehendable at some point
     Check(parser.blocks.count == 0, "missing % end statements!", parser.blocks.count);
     
-    program := Program.{words, types, globl, loose, allocator};
+    program := Program.{words, types, globl, loose};
     
     // NOTE: for now we do not support nested macros
     for def: macros {
@@ -250,48 +249,51 @@ expr_to_word :: (parser: *Parser, expr: Expr) -> FWord, bool {
         case .ERR; assert(false, "TODO: ERR"); Fail();
         case .EOF; assert(false, "TODO: EOF"); Fail();
         case .SYM; if expr.text == {
-            // TODO: context stack stuff to differentiate different kinds of ends
+            // TODO: context stkack stuff to differentiate different kinds of ends
             case "putc"; return .{type=.PUTC}, true;
             case "putb"; return .{type=.PUTB}, true;
             case "puti"; return .{type=.PUTI}, true;
             case "puts"; return .{type=.PUTS}, true;
             case "puta"; return .{type=.PUTA}, true;
             
-            case "rot";  return .{type=.ROT, as.rot=1}, true;
+            case "rot";  {
+                return .{type=.ROT, as.rot=1}, true;
+            }
             case "dup";  return .{type=.DUP, as.dup=1}, true;
+            case "drop"; return .{type=.DROP, as.dup=1}, true;
             
-            case "if"; {
-                array_add(*parser.blocks, .{.IF, parser.tape_index, -1});
-                return .{type=.JIZ}, true;
-            }
-            case "while"; {
-                array_add(*parser.blocks, .{.WHILE, parser.tape_index, -1});
-                return .{type=.NAME}, true;
-            }
             case "do"; {
                 Check(parser.blocks.count > 0 && parser.blocks[parser.blocks.count-1].type == .WHILE,
                       "'do' can only be used inside a while loop!");
                 parser.blocks[parser.blocks.count-1].do_index = parser.tape_index;
-                return .{type=.JIZ}, true;
+                return .{type=.JIF}, true;
+            }
+            case "if"; {
+                array_add(*parser.blocks, .{.IF, parser.tape_index, -1});
+                return .{type=.JIF}, true;
+            }
+            case "while"; {
+                array_add(*parser.blocks, .{.WHILE, parser.tape_index, -1});
+                return .{type=.NAME}, true;
             }
             case "end";  {
                 Check(parser.blocks.count != 0, "unmatched end!");
                 b := parser.blocks[parser.blocks.count-1];
                 if #complete b.type == {
                 case .IF; {
+                    assert(parser.tape.*[b.index].type == .JIF);
                     parser.blocks.count -= 1;
-                    assert(parser.tape.*[b.index].type == .JIZ);
-                    parser.tape.*[b.index].as.jiz = parser.tape_index;
+                    parser.tape.*[b.index].as.jif = cast(u32) parser.tape_index;
                     // NOTE: sometimes we don't want to add any words to the tape
                     //       so we denote a name statement with no name as a word
                     //       that should not be appended
                     return .{type=.NAME}, true;
                 }
                 case .WHILE; {
+                    assert(parser.tape.*[b.do_index].type == .JIF);
                     parser.blocks.count -= 1;
-                    assert(parser.tape.*[b.do_index].type == .JIZ);
-                    parser.tape.*[b.do_index].as.jiz = parser.tape_index+1;
-                    return .{type=.JMP,  as.jmp=b.index}, true;
+                    parser.tape.*[b.do_index].as.jif = cast(u32) (parser.tape_index+1);
+                    return .{type=.JMP,  as.jmp=cast(u32)b.index}, true;
                 }
                 case .PROC;  return .{type=.NAME, as.name=expr.text}, true;
                 case .MACRO; return .{type=.NAME, as.name=expr.text}, true;
@@ -302,7 +304,7 @@ expr_to_word :: (parser: *Parser, expr: Expr) -> FWord, bool {
             case; return .{type=.NAME, as.name=expr.text}, true;
         }
         case .NUM;    return .{type=.PUSH_INT, as.push_int=expr.as.atom.number}, true;
-        case .STR;    return .{type=.PUSH_STR, as.push_str=expr.text}, true;
+        case .STR;    return .{type=.PUSH_STR, as.push_str=copy_string(expr.text)}, true;
         case .OP_ADD; return .{type=.ADD}, true;
         case .OP_GET; return .{type=.GET}, true;
         case .OP_PUT; return .{type=.PUT}, true;
@@ -358,6 +360,24 @@ expr_to_word :: (parser: *Parser, expr: Expr) -> FWord, bool {
             }
             return .{type=.SIZE_OF_TYPE, as.size_of_type=ts}, true;
         }
+        case "dup"; {
+            Check(args.count == 1, "dup expects a single argument! got %", args);
+            Check(args[0].count == 1, "dup expects a single argument! got %", args);
+            a := args[0][0];
+            Check(a.type == .ATOM && a.as.atom.type == .NUM, "dup expects a single number, but got %", a);
+            n := a.as.atom.number;
+            Check(n >= 1, "Expected 1 or greater in dup, but got %", n);
+            return .{type=.DUP, as.dup=n}, true;
+        }
+        case "drop"; {
+            Check(args.count == 1, "drop expects a single argument! got %", args);
+            Check(args[0].count == 1, "drop expects a single argument! got %", args);
+            a := args[0][0];
+            Check(a.type == .ATOM && a.as.atom.type == .NUM, "drop expects a single number, but got %", a);
+            n := a.as.atom.number;
+            Check(n >= 1, "Expected 1 or greater in drop, but got %", n);
+            return .{type=.DROP, as.drop=n}, true;
+        }
         case; {
             idents: [..]string;
             for args {
@@ -401,9 +421,8 @@ expr_to_type :: (expr: Expr) -> TWord, bool {
 
 parse_word :: (parser: *Parser, tokens: *Tokenizer) -> FWord, bool {
     expr, eof := parse_expr(tokens);
-    // log("!!! % %", expr.type, eof);
     if !expr {
-        if eof log_error("unexpected end of file %", parser.*);
+        if eof log_error("unexpected end of file %", parser.blocks);
         return .{}, false;
     }
     defer free_expr(expr);
@@ -421,6 +440,11 @@ parse_type :: (tokens: *Tokenizer) -> TWord, bool {
     return .{}, false;
 }
 
+// parse_expr :: (tokens: *Tokenizer) -> *Expr, eof: bool {
+//     e, eof := inline _parse_expr(tokens);
+//     if e if eof log("parsed EOF"); else log("parsed %", e.*);
+//     return e, eof;
+// }
 parse_expr :: (tokens: *Tokenizer) -> *Expr, eof: bool {
     expr  :  *Expr;
     token := next(tokens);
@@ -516,9 +540,19 @@ parse_expr :: (tokens: *Tokenizer) -> *Expr, eof: bool {
 // but on the other hand, the concatenative-ness of the language means that we only
 // ever have a pretty small amount of Exprs in flight at any given moment, meaning we
 // can potentially save memory if we were to reuse them instead pooling allocations
-expressions: void;
-get :: (e: *void, $initialize:=true) -> *Expr { return New(Expr, initialized=initialize); }
-del :: (e: *void, expr: *Expr) { free(expr); }
+// expressions: void;
+// i := 0;
+expressions: Pool;
+get :: (e: *void, $initialize:=true) -> *Expr {
+    // i += 1;
+    // log("+%", i);
+    return New(Expr, initialized=initialize,, Allocator.{pool_allocator_proc, *expressions});
+}
+del :: (e: *void, expr: *Expr) {
+    // i -= 1;
+    // log("-%", i);
+    free(expr,, Allocator.{pool_allocator_proc, *expressions});
+}
 
 // TODO: properly route Rerps throughought the compilation process and output better
 //       error messages because they are very stinky and bad right now

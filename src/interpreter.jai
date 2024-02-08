@@ -10,6 +10,7 @@ Virtual_Machine :: struct {
     bindings: Table(string, int); // name -> index to start in var_buf
     regs: [32]int;
     vars: [512]u8;
+    output: String_Builder;
     // tape: []FWord;
 }
 
@@ -44,10 +45,10 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
     // }
     if #complete word.type == {
     case .JMP; return word.as.jmp;
-    case .JIZ; {
+    case .JIF; {
         if regs_top < 1 assert(false, "register stack underflow");
         regs_top -= 1;
-        return ifx regs[regs_top] == 0 then word.as.jiz else ip + 1;
+        return ifx regs[regs_top] == 0 then word.as.jif else ip + 1;
     }
     case .PUSH_INT; {
         if regs_top >= regs.count assert(false, "register stack overflow");
@@ -59,7 +60,8 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
         if regs_top >= regs.count-1 assert(false, "register stack overflow");
         // TODO: copy into string storage and escape stuff
         regs[regs_top]   = word.as.push_str.count - 2;
-        regs[regs_top+1] = cast,force(int) word.as.push_str.data + 1;
+        regs[regs_top+1] = cast,force(int) (word.as.push_str.data + 1);
+        
         regs_top += 2;
         return ip + 1;
     }
@@ -130,7 +132,7 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
             regs_top -= 1;
         } else for t.as.stk {
             (cast(*int)(vars.data+v+it.offset)).* = regs[regs_top-1];
-            vars_top += runtime_size(t);
+            vars_top += xx runtime_size(it.type);
             regs_top -= 1;
         }
         return ip + 1;
@@ -158,6 +160,14 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
         }
         return ip + 1;
     }
+    case .DROP; {
+        assert(word.as.drop >= 1);
+        for 1..word.as.dup {
+            if regs_top < 1 assert(false, "register stack underflow");
+            regs_top -= 1;
+        }
+        return ip + 1;
+    }
     case .MACRO; {
         if !interpret_words(vm, dict, word.as.macro.call.body) return -1;
         return ip + 1;
@@ -175,28 +185,28 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
         str: string = ---;
         str.count = 1;
         str.data  = cast(*u8) *regs[regs_top-1];
-        write_string(str);
+        append(*output, str);
         regs_top -= 1;
         return ip + 1;
     }
     case .PUTI; {
         if regs_top < 1 assert(false, "register stack underflow");
         i := regs[regs_top-1];
-        print("%", i);
+        print_to_builder(*output, "%", i);
         regs_top -= 1;
         return ip + 1;
     }
     case .PUTB; {
         if regs_top < 1 assert(false, "register stack underflow");
         i := regs[regs_top-1];
-        write_string(ifx i == 0 then "false" else "true");
+        append(*output, ifx i == 0 then "false" else "true");
         regs_top -= 1;
         return ip + 1;
     }
     case .PUTA; {
         if regs_top < 1 assert(false, "register stack underflow");
         i := regs[regs_top-1];
-        print("%", cast,force(*void) i);
+        print_to_builder(*output, "%", cast,force(*void) i);
         regs_top -= 1;
         return ip + 1;
     }
@@ -207,7 +217,7 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
         str.count = regs[regs_top-2];
         regs_top -= 2;
         
-        write_string(str);
+        append(*output, str);
         return ip + 1;
     }
     case .CASTT;      return ip + 1;

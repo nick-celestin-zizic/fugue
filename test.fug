@@ -1,35 +1,9 @@
-def proc    1 2 +   end
-def macro() 2 1 +   end
-def putln() 10 putc end
-
 def main
-    0 while dup dup 5 < do
-        puti putln 1 +
+    "Hello, World!" puts 10 putc
+    0 while dup(2) 3 < do
+        puti " " puts 1 +
     end
-    5 > if "wow" puts putln end
-    
-    "Hello, world!" puts putln
-    proc macro +    var(local)
-    "global: " puts global. puti " (" puts global puta ")" puts putln
-    "str:    " puts str.    puts " (" puts str    puta ")" puts putln
-    "local:  " puts local.  puti " (" puts local  puta ")" puts putln
-    cool . . puti ": " puts puti putln
+    var(test) drop
+    test. puti 10 putc
+    "done!" puts 10 putc
 end
-
-type string
-    addr name(data)
-    int  name(count)
-end
-
-type array
-    ptr name(data)
-    int name(count)
-end
-
-"global string" var(str, string)
-
-1 2 +                var(global)
-"Runs before main!"  puts putln
-proc macro +         puti putln
-
-"verycoolverycool" cast(int ptr) rot size_of(int) / rot var(cool, int array)
