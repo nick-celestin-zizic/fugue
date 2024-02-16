@@ -44,9 +44,9 @@ parse :: (src: string) -> Program, bool {
     // remember_allocators(*expressions);
     defer release(*expressions);
     
-    auto_release_temp();
-    parser := Parser.{tape=*loose, blocks.allocator=temp};
-    macros := Table(string, Macro).{allocator=temp};
+    // auto_release_temp();
+    parser := Parser.{tape=*loose};//, blocks.allocator=temp};
+    macros := Table(string, Macro).{};//allocator=temp};
     tokens := Tokenizer.{rhs=src};
     while true {
         expr, eof := parse_expr(*tokens);
@@ -84,14 +84,15 @@ parse :: (src: string) -> Program, bool {
                     Check(ok);
                     
                     // REPORT: Short circuit && does not work!?!?!?!??!?!?!?!?
-                    // but only when it encounters a PUSH_INT(3) instruction??!?!?!?!?!?
                     if word.type == .NAME if word.as.name == "end" {
                         Check(match_end(parser.blocks, .PROC));
                         parser.blocks.count -= 1;
                         break;
                     }
                     // if word.type == .PROC_END break;
-                    if !(word.type == .NAME && !word.as.name) {
+                    if word.type != .NAME || word.as.name.count != 0 {
+                        if word.type == .NAME
+                        then assert(word.as.name.count != 0, "% % %", word, word.as.name.count, word.as.name.count != 0);
                         parser.tape_index += 1;
                         array_add(*ws, word);
                     }
@@ -122,7 +123,9 @@ parse :: (src: string) -> Program, bool {
                         break;
                     }
                     // if word.type == .PROC_END break;
-                    if !(word.type == .NAME && !word.as.name) {
+                    if word.type != .NAME || word.as.name.count != 0 {
+                        if word.type == .NAME
+                        then assert(word.as.name.count != 0, "% % %", word, word.as.name.count, word.as.name.count != 0);
                         parser.tape_index += 1;
                         array_add(*ws, word);
                     }
@@ -149,7 +152,9 @@ parse :: (src: string) -> Program, bool {
         } else {
             word, ok := expr_to_word(*parser, expr);
             Check(ok);
-            if !(word.type == .NAME && !word.as.name) {
+            if word.type != .NAME || word.as.name.count != 0 {
+                if word.type == .NAME
+                then assert(word.as.name.count != 0, "% % %", word, word.as.name.count, word.as.name.count != 0);
                 parser.tape_index += 1;
                 array_add(*loose, word);
             }
@@ -165,6 +170,7 @@ parse :: (src: string) -> Program, bool {
     
     // NOTE: for now we do not support nested macros
     for def: macros {
+        assert(false);
         for * it: def.body if it.type == .NAME {
             if array_find(def.args, it.as.name)     then continue;
             if !resolve_name(*program, null, *macros, it) then Fail();
@@ -210,6 +216,7 @@ resolve_name :: (
     assert(word != null);
     assert(word.type == .NAME);
     name := word.as.name;
+    assert(xx name);
     
     _, ok := table_find(*words, name);
     if ok {
@@ -242,6 +249,11 @@ resolve_name :: (
     return false;
 }
 
+// expr_to_word :: (parser: *Parser, expr: Expr) -> FWord, bool {
+//     word, ok := _expr_to_word(parser, expr);
+//     if ok log("expr_to_word: %", word); else log("expr_to_word: failed");
+//     return word, ok;
+// }
 expr_to_word :: (parser: *Parser, expr: Expr) -> FWord, bool {
     using Short_Circuit_Macros(#code return .{}, false).{};
     if #complete expr.type == {
@@ -441,8 +453,10 @@ parse_type :: (tokens: *Tokenizer) -> TWord, bool {
 }
 
 // parse_expr :: (tokens: *Tokenizer) -> *Expr, eof: bool {
+//     log("% %", tokens.rhs.count, cast(bool) tokens.rhs);
+//     if !tokens.rhs return null, true;
 //     e, eof := inline _parse_expr(tokens);
-//     if e if eof log("parsed EOF"); else log("parsed %", e.*);
+//     if e if eof log("parsed EOF"); else log("parsed %", e.text);
 //     return e, eof;
 // }
 parse_expr :: (tokens: *Tokenizer) -> *Expr, eof: bool {

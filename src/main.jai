@@ -85,8 +85,8 @@ TWord :: Tagged(union {
 });
 
 FONT_DATA       :: #run cast([]u8) read_entire_file("firacode.ttf");
-LIST_FONT_SCALE :: 0.015;
-DATA_FONT_SCALE :: 0.025;
+LIST_FONT_SCALE :: 0.025;
+DATA_FONT_SCALE :: 0.035;
 
 window_width         := 800;
 window_height        := 600;
@@ -142,22 +142,23 @@ inspector: struct {
 //     stacks : [][]*FType; // stacks[ip] is the type stack AFTER tape[i] executes
 // }
 // load_program :: (path: string) -> Debug_Info, bool {
-load_program :: (path: string) -> Virtual_Machine, Program, Typer, Allocator, bool {
-    // heap: Allocator;
-    heap := create_heap(context.allocator);
-    push_allocator(heap);
+p: Pool;
+load_program :: (path: string) -> Virtual_Machine, Program, Typer, bool {
+    reset(*p);
+    p.block_allocator = context.allocator;
+    PushState(context.allocator, .{pool_allocator_proc, *p});
     
     src, ok := read_entire_file(path);
-    if !ok return .{}, .{}, .{}, .{}, false;
+    if !ok return .{}, .{}, .{}, false;
     ast:, ok = parse(src);
-    if !ok return .{}, .{}, .{}, .{}, false;
+    if !ok return .{}, .{}, .{}, false;
     types:, ok = typecheck_program(*ast);
-    if !ok return .{}, .{}, .{}, .{}, false;
+    if !ok return .{}, .{}, .{}, false;
     
     vm: Virtual_Machine;
     remember_allocators(*vm.bindings);
-    if !interpret_words(*vm, *ast.words, ast.loose) return .{}, .{}, .{}, .{}, false;
-    return vm, ast, types, heap, true;
+    if !interpret_words(*vm, *ast.words, ast.loose) return .{}, .{}, .{}, false;
+    return vm, ast, types, true;
 }
 
 // UA :: #import "Unmapping_Allocator";
@@ -171,7 +172,7 @@ main :: () {
         return;
     }
     
-    vm, ast, types, heap, ok := load_program(args[1]);
+    vm, ast, types, ok := load_program(args[1]);
     main_body:, ok = table_find(*ast.words, "main");
     assert(ok);
     type_stack: []*FType;
@@ -184,7 +185,7 @@ main :: () {
             inspector.active = false;
             type_stack = .[];
             ip = 0;
-            vm = .{bindings.allocator=heap};
+            vm = .{bindings.allocator=.{pool_allocator_proc, *p}};
             ok = interpret_words(*vm, *ast.words, ast.loose);
             assert(ok);
         }
@@ -409,7 +410,8 @@ main :: () {
         sleep_milliseconds(10);
     }
     
-    destroy_heap(heap);
+    // destroy_heap(heap);
+    release(*p);
     log("Temporary Storage High Water Mark: % bytes", context.temporary_storage.high_water_mark);
     log("\nMemory Leak Report:");
     report_memory_leaks(.{
