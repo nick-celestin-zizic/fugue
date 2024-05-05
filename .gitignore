@@ -1,3 +1,8 @@
 src/.build
 *.pdb
 *.exe
+src/main
+*.o
+.build/.added_strings_w2.jai
+.build/.added_strings_w3.jai
+.build/.added_strings_w4.jai

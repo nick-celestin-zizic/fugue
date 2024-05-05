@@ -1,8 +1,3 @@
-Procedure :: struct {
-    body: []FWord;
-    locals: Table(string, []TWord);
-}
-
 Block :: struct {
     Tag :: enum {
         PROC;
@@ -12,7 +7,7 @@ Block :: struct {
     }
     type     : Tag;
     index    : int;
-    do_index : int; // additional index used as a label for a do in a while
+    do_index : int = -1; // additional index used as a label for a do in a while
 }
 
 Parser :: struct {
@@ -39,7 +34,7 @@ parse :: (src: string) -> Program, bool {
     globl: Table(string, []TWord);
     loose: [..]FWord;
     
-    using Short_Circuit_Macros(#code { assert(false); return .{}, false; }).{};
+    using Short_Circuit_Macros(#code { return .{}, false; }).{};
     expressions.block_allocator = context.allocator;
     // remember_allocators(*expressions);
     defer release(*expressions);
@@ -50,20 +45,21 @@ parse :: (src: string) -> Program, bool {
     tokens := Tokenizer.{rhs=src};
     while true {
         expr, eof := parse_expr(*tokens);
-        if !expr if eof then break; else Fail();
+        if !expr if eof then break; else Throw();
         defer free_expr(expr);
         if expr.type != .ATOM {
             word, ok := expr_to_word(*parser, expr);
-            Check(ok);
+            Try(ok);
             array_add(*loose, word);
             if word.type == .PUT_VAR
             then table_set(*globl, word.as.put_var.name, word.as.put_var.type);
             // log("%", word);
         } else if expr.text == "def" {
-            name := parse_expr(*tokens); 
-            Check(name != null);
+            name, eof := parse_expr(*tokens); 
+            Try(!eof, "Unexpected end of file!");
+            Try(name != null);
             defer free_expr(name);
-            Check(parser.blocks.count == 0, "all word definitions must be in global scope!");
+            Try(parser.blocks.count == 0, "all word definitions must be in global scope!");
             ws: [..]FWord;
             if #complete name.type == {
             case .ATOM; { // procedure
@@ -72,20 +68,16 @@ parse :: (src: string) -> Program, bool {
                 PushState(parser.tape_index, 0);
                 while true {
                     expr, eof := parse_expr(*tokens);
-                    if eof {
-                        Check(match_end(parser.blocks, .PROC));
-                        parser.blocks.count -= 1;
-                        break;
-                    }
-                    Check(expr != null);
+                    Try(!eof, "Unexpected end of file!");
+                    Try(expr != null);
                     defer free_expr(expr);
                     
                     word, ok := expr_to_word(*parser, expr);
-                    Check(ok);
+                    Try(ok);
                     
                     // REPORT: Short circuit && does not work!?!?!?!??!?!?!?!?
                     if word.type == .NAME if word.as.name == "end" {
-                        Check(match_end(parser.blocks, .PROC));
+                        Try(match_end(parser.blocks, .PROC));
                         parser.blocks.count -= 1;
                         break;
                     }
@@ -101,57 +93,31 @@ parse :: (src: string) -> Program, bool {
                 table_add(*words, name.text, ws);
             }
             case .CALL; { // macro
-                Check(parser.blocks.count == 0, "all macro definitions must be in global scope!");
-                array_add(*parser.blocks, .{type=.MACRO});
-                PushState(parser.tape, *ws);
-                PushState(parser.tape_index, 0);
-                args: [..]string; args.allocator = temp;
-                for name.as.call.args {
-                    if it.count   != 1
-                    || it[0].type != .ATOM        
-                    || it[0].as.atom.type != .SYM
-                    then Fail("macro args must be a single symbol");
-                    array_add(*args, it[0].text);
-                }
-                while true {
-                    word, ok := parse_word(*parser, *tokens);
-                    Check(ok);
-                    // TODO: parser should have a context stack for blocks and stuff
-                    if word.type == .NAME && word.as.name == "end" {
-                        Check(match_end(parser.blocks, .MACRO));
-                        parser.blocks.count -= 1;
-                        break;
-                    }
-                    // if word.type == .PROC_END break;
-                    if word.type != .NAME || word.as.name.count != 0 {
-                        if word.type == .NAME
-                        then assert(word.as.name.count != 0, "% % %", word, word.as.name.count, word.as.name.count != 0);
-                        parser.tape_index += 1;
-                        array_add(*ws, word);
-                    }
-                }
-                table_set(*macros, name.as.call.head, .{args, ws});
+                Throw("TODO: explicitly typed procedures");
             }
             }
         } else if expr.text == "type" {
-            name := parse_expr(*tokens);
+            name, eof := parse_expr(*tokens);
+            Try(!eof, "Unexpected end of file!");
+            Try(name != null);
             defer free_expr(name);
-            assert(name != null);
-            if name.type != .ATOM assert(false);
+            Try(name.type == .ATOM, "Expected name after `type` but got `%`", name.text);
+            
             tws: [..]TWord;
             while true {
-                expr := parse_expr(*tokens);
-                assert(expr != null);
+                expr, eof := parse_expr(*tokens);
+                Try(!eof, "Unexpected end of file!");
+                Try(expr != null);
                 defer free_expr(expr);
                 if expr.type == .ATOM && expr.text == "end" break;
                 tw, ok := expr_to_type(expr);
-                assert(ok);
+                Try(ok);
                 array_add(*tws, tw);
             }
             table_set(*types, name.text, tws);
         } else {
             word, ok := expr_to_word(*parser, expr);
-            Check(ok);
+            Try(ok);
             if word.type != .NAME || word.as.name.count != 0 {
                 if word.type == .NAME
                 then assert(word.as.name.count != 0, "% % %", word, word.as.name.count, word.as.name.count != 0);
@@ -164,7 +130,7 @@ parse :: (src: string) -> Program, bool {
     }
     
     // TODO: really need to start making these errors comprehendable at some point
-    Check(parser.blocks.count == 0, "missing % end statements!", parser.blocks.count);
+    Try(parser.blocks.count == 0, "missing % end statements!", parser.blocks.count);
     
     program := Program.{words, types, globl, loose};
     
@@ -173,12 +139,12 @@ parse :: (src: string) -> Program, bool {
         assert(false);
         for * it: def.body if it.type == .NAME {
             if array_find(def.args, it.as.name)     then continue;
-            if !resolve_name(*program, null, *macros, it) then Fail();
+            if !resolve_name(*program, null, *macros, it) then Throw();
         }
     }
     
     for * loose if it.type == {
-        case .NAME;  if !resolve_name(*program, null, *macros, it) Fail();
+        case .NAME;  if !resolve_name(*program, null, *macros, it) Throw();
         case .MACRO; fill_macro_body(*macros, *it.as.macro.call, it.as.macro.name);
     }
     
@@ -187,7 +153,7 @@ parse :: (src: string) -> Program, bool {
         table_reset(*local_scope);
         for * body if it.type == {
         case .PUT_VAR; table_set(*local_scope, it.as.put_var.name, it.as.put_var.type);
-        case .NAME;    Check(resolve_name(*program, *local_scope, *macros, it));
+        case .NAME;    Try(resolve_name(*program, *local_scope, *macros, it));
         case .MACRO;   fill_macro_body(*macros, *it.as.macro.call, it.as.macro.name);
         }
     }
@@ -245,7 +211,7 @@ resolve_name :: (
         return true;
     }
     
-    log_error("unkown word %", name);
+    log_error("unknown word %", name);
     return false;
 }
 
@@ -258,24 +224,24 @@ expr_to_word :: (parser: *Parser, expr: Expr) -> FWord, bool {
     using Short_Circuit_Macros(#code return .{}, false).{};
     if #complete expr.type == {
     case .ATOM; if #complete expr.as.atom.type == {
-        case .ERR; assert(false, "TODO: ERR"); Fail();
-        case .EOF; assert(false, "TODO: EOF"); Fail();
+        case .ERR; assert(false, "TODO: ERR"); Throw();
+        case .EOF; assert(false, "TODO: EOF"); Throw();
         case .SYM; if expr.text == {
             // TODO: context stkack stuff to differentiate different kinds of ends
+            case "_";    return .{type=.HOLE}, true;
             case "putc"; return .{type=.PUTC}, true;
             case "putb"; return .{type=.PUTB}, true;
             case "puti"; return .{type=.PUTI}, true;
             case "puts"; return .{type=.PUTS}, true;
             case "puta"; return .{type=.PUTA}, true;
             
-            case "rot";  {
-                return .{type=.ROT, as.rot=1}, true;
-            }
-            case "dup";  return .{type=.DUP, as.dup=1}, true;
+            case "rot";  return .{type=.ROT,  as.rot=1}, true;
+            case "dup";  return .{type=.DUP,  as.dup=1}, true;
             case "drop"; return .{type=.DROP, as.dup=1}, true;
+            case "over"; return .{type=.OVER, as.dup=1}, true;
             
             case "do"; {
-                Check(parser.blocks.count > 0 && parser.blocks[parser.blocks.count-1].type == .WHILE,
+                Try(parser.blocks.count > 0 && parser.blocks[parser.blocks.count-1].type == .WHILE,
                       "'do' can only be used inside a while loop!");
                 parser.blocks[parser.blocks.count-1].do_index = parser.tape_index;
                 return .{type=.JIF}, true;
@@ -289,7 +255,7 @@ expr_to_word :: (parser: *Parser, expr: Expr) -> FWord, bool {
                 return .{type=.NAME}, true;
             }
             case "end";  {
-                Check(parser.blocks.count != 0, "unmatched end!");
+                Try(parser.blocks.count != 0, "unmatched end!");
                 b := parser.blocks[parser.blocks.count-1];
                 if #complete b.type == {
                 case .IF; {
@@ -302,41 +268,43 @@ expr_to_word :: (parser: *Parser, expr: Expr) -> FWord, bool {
                     return .{type=.NAME}, true;
                 }
                 case .WHILE; {
-                    assert(parser.tape.*[b.do_index].type == .JIF);
+                    Try(b.do_index >= 0 && b.do_index < parser.tape.count,
+                        "missing `do` after `while`");
+                    Try(parser.tape.*[b.do_index].type == .JIF, "oof");
                     parser.blocks.count -= 1;
                     parser.tape.*[b.do_index].as.jif = cast(u32) (parser.tape_index+1);
                     return .{type=.JMP,  as.jmp=cast(u32)b.index}, true;
                 }
                 case .PROC;  return .{type=.NAME, as.name=expr.text}, true;
                 case .MACRO; return .{type=.NAME, as.name=expr.text}, true;
-                case; assert(false, "%", b); Fail();
+                case; assert(false, "%", b); Throw();
                 }
                 
             }
             case; return .{type=.NAME, as.name=expr.text}, true;
         }
         case .NUM;    return .{type=.PUSH_INT, as.push_int=expr.as.atom.number}, true;
-        case .STR;    return .{type=.PUSH_STR, as.push_str=copy_string(expr.text)}, true;
+        case .STR;    return .{type=.PUSH_STR, as.push_str.s=expr.text}, true;
         case .OP_ADD; return .{type=.ADD}, true;
         case .OP_GET; return .{type=.GET}, true;
         case .OP_PUT; return .{type=.PUT}, true;
         case .OP_GT;  return .{type=.GT},  true;
         case .OP_LT;  return .{type=.LT},  true;
-        case .OP_SUB; assert(false, "TODO: OP_SUB"); Fail();
-        case .OP_MUL; assert(false, "TODO: OP_MUL"); Fail();
+        case .OP_SUB; return .{type=.SUB}, true;
+        case .OP_MUL; Throw("TODO: OP_MUL");
         case .OP_DIV; return .{type=.DIV}, true;
-        case .OP_EXP; assert(false, "TODO: OP_EXP"); Fail();
-        case .PAREN_OPEN;  assert(false, "TODO: PAREN_OPEN");  Fail();
-        case .PAREN_CLOSE; assert(false, "TODO: PAREN_CLOSE"); Fail();
-        case; assert(false); Fail();
+        case .OP_EXP;        Throw("TODO: OP_EXP");
+        case .PAREN_OPEN;    Throw("TODO: PAREN_OPEN");
+        case .PAREN_CLOSE;   Throw("TODO: PAREN_CLOSE");
+        case; Throw("internal compiler error: corrupt atom type %", expr.as.atom.type);
     }
     case .CALL; using expr.as.call; if head == {
         case "cast"; {
-            Check(args.count == 1, "cast expects a single argument! got %", args);
+            Try(args.count == 1, "cast expects a single argument! got %", args);
             ts: [..]TWord;
             for args[0] {
                 t, ok := expr_to_type(it);
-                Check(ok);
+                Try(ok);
                 array_add(*ts, t);
             }
             return .{type=.CASTT, as.castt=ts}, true;
@@ -345,62 +313,83 @@ expr_to_word :: (parser: *Parser, expr: Expr) -> FWord, bool {
             tws: [..]TWord;
             if args.count == {
             case 1; {
-                Check(args[0].count == 1 && args[0][0].type == .ATOM,
+                Try(args[0].count == 1 && args[0][0].type == .ATOM,
                       "expected single symbol but got %", args);
                 array_add(*tws, .{type=.NAME, as.name=""}); // this means infer the type later
             } 
             case 2; {
-                Check(args[0].count == 1 && args[0][0].type == .ATOM,
+                Try(args[0].count == 1 && args[0][0].type == .ATOM,
                       "expected single symbol but got %", args);
                 for args[1] {
                     tw, ok := expr_to_type(it);
-                    Check(ok, cleanup=array_free(tws));
+                    Try(ok);
                     array_add(*tws, tw);
                 }
             }
-            case; Fail("incorrect number of arguments to var operator");
+            case; Throw("incorrect number of arguments to var operator");
             }
             return .{type=.PUT_VAR, as.put_var=.{args[0][0].text, tws}}, true;
         }
         case "size_of"; {
-            Check(args.count == 1, "size_of expects a single argument! got %", args);
+            Try(args.count == 1, "size_of expects a single argument! got %", args);
             ts: [..]TWord;
             for args[0] {
                 tw, ok := expr_to_type(it);
-                Check(ok, cleanup=array_free(ts));
+                Try(ok);
                 array_add(*ts, tw);
             }
             return .{type=.SIZE_OF_TYPE, as.size_of_type=ts}, true;
         }
         case "dup"; {
-            Check(args.count == 1, "dup expects a single argument! got %", args);
-            Check(args[0].count == 1, "dup expects a single argument! got %", args);
+            Try(args.count == 1, "dup expects a single argument! got %", args);
+            Try(args[0].count == 1, "dup expects a single argument! got %", args);
             a := args[0][0];
-            Check(a.type == .ATOM && a.as.atom.type == .NUM, "dup expects a single number, but got %", a);
+            Try(a.type == .ATOM && a.as.atom.type == .NUM, "dup expects a single number, but got %", a);
             n := a.as.atom.number;
-            Check(n >= 1, "Expected 1 or greater in dup, but got %", n);
+            Try(n >= 1, "Expected 1 or greater in dup, but got %", n);
             return .{type=.DUP, as.dup=n}, true;
         }
         case "drop"; {
-            Check(args.count == 1, "drop expects a single argument! got %", args);
-            Check(args[0].count == 1, "drop expects a single argument! got %", args);
+            Try(args.count == 1, "drop expects a single argument! got %", args);
+            Try(args[0].count == 1, "drop expects a single argument! got %", args);
             a := args[0][0];
-            Check(a.type == .ATOM && a.as.atom.type == .NUM, "drop expects a single number, but got %", a);
+            Try(a.type == .ATOM && a.as.atom.type == .NUM, "drop expects a single number, but got %", a);
             n := a.as.atom.number;
-            Check(n >= 1, "Expected 1 or greater in drop, but got %", n);
+            Try(n >= 1, "Expected 1 or greater in drop, but got %", n);
             return .{type=.DROP, as.drop=n}, true;
         }
+        case "rot"; {
+            Try(args.count == 1, "rot expects a single argument! got %", args);
+            Try(args[0].count == 1, "rot expects a single argument! got %", args);
+            a := args[0][0];
+            Try(a.type == .ATOM && a.as.atom.type == .NUM, "rot expects a single number, but got %", a);
+            n := a.as.atom.number;
+            Try(n >= 1, "Expected 1 or greater in rot, but got %", n);
+            return .{type=.ROT, as.rot=n}, true;
+        }
+        case "over"; {
+            Try(args.count == 1, "rot expects a single argument! got %", args);
+            Try(args[0].count == 1, "rot expects a single argument! got %", args);
+            a := args[0][0];
+            Try(a.type == .ATOM && a.as.atom.type == .NUM, "rot expects a single number, but got %", a);
+            n := a.as.atom.number;
+            Try(n >= 1, "Expected 1 or greater in rot, but got %", n);
+            return .{type=.OVER, as.rot=n}, true;
+        }
         case; {
-            idents: [..]string;
-            for args {
-                if args.count != 1     assert(false);
-                if it[0].type != .ATOM assert(false);
-                array_add(*idents, it[0].text);
-            }
-            return .{type=.MACRO, as.macro=.{head, .{idents, .[]}}}, true;
+            // assert(false, "TODO: macros (%)", head);
+            Throw("TODO: macros (%)", head);
+            // idents: [..]string;
+            // for args {
+            //     Try(args.count == 1, "");
+            //     if args.count != 1     assert(false);
+            //     if it[0].type != .ATOM assert(false);
+            //     array_add(*idents, it[0].text);
+            // }
+            // return .{type=.MACRO, as.macro=.{head, .{idents, .[]}}}, true;
         }
     }
-    case; assert(false); Fail();
+    case; assert(false); Throw();
     }
     
     assert(false);
@@ -409,6 +398,7 @@ expr_to_word :: (parser: *Parser, expr: Expr) -> FWord, bool {
 
 expr_to_type :: (expr: Expr) -> TWord, bool {
     // log("% ==> %", expr.text, expr);
+    using Short_Circuit_Macros(#code { return .{}, false; }).{};
     if #complete expr.type == {
     case .ATOM; if expr.text == {
         case "int";  return .{type=.PUSH_TYPE, as.push_type=*TYPE_INT}, true;
@@ -418,12 +408,12 @@ expr_to_type :: (expr: Expr) -> TWord, bool {
     }
     case .CALL; using expr.as.call; if head == {
         case "name"; {
-            if args.count      != 1     assert(false);
-            if args[0].count   != 1     assert(false);
-            if args[0][0].type != .ATOM assert(false);
+            Try(args.count == 1, "name() type directive expects 1 argument, but got %", args.count);
+            Try(args[0].count == 1, "name() type directive expects a single identifier as its argument, but got % words", args[0].count);
+            Try(args[0][0].type == .ATOM, "name() type directive expects a simple identifier as its argument, but got % instead", args[0][0]);
             return .{type=.ADD_NAME, as.add_name=args[0][0].text}, true;
         }
-        case; assert(false, "%: %", expr.text, expr);
+        case; Throw("unknown type directive %", head);
     }
     
     }
@@ -443,17 +433,24 @@ parse_word :: (parser: *Parser, tokens: *Tokenizer) -> FWord, bool {
     return word, true;
 }
 
-parse_type :: (tokens: *Tokenizer) -> TWord, bool {
-    expr := parse_expr(tokens);
-    if !expr return .{}, false;
-    defer free_expr(expr);
-    type, ok := expr_to_type(expr);
-    if !ok return .{}, false;
-    return .{}, false;
-}
+// parse_type :: (tokens: *Tokenizer) -> TWord, bool {
+//     expr, eof := parse_expr(tokens);
+//     if eof {
+//         log_error("Unexpected end of file!");
+//         return .{}, false;
+//     }
+    
+//     if !expr return .{}, false;
+//     defer free_expr(expr);
+    
+//     type, ok := expr_to_type(expr);
+//     if !ok return .{}, false;
+    
+//     return .{}, false;
+// }
 
-// parse_expr :: (tokens: *Tokenizer) -> *Expr, eof: bool {
-//     log("% %", tokens.rhs.count, cast(bool) tokens.rhs);
+// parse_expr :: (tokens: *Tokenizer) -> *Expr, eof: bool #must {
+//     // log("% %", tokens.rhs.count, cast(bool) tokens.rhs);
 //     if !tokens.rhs return null, true;
 //     e, eof := inline _parse_expr(tokens);
 //     if e if eof log("parsed EOF"); else log("parsed %", e.text);
@@ -465,11 +462,15 @@ parse_expr :: (tokens: *Tokenizer) -> *Expr, eof: bool {
     // log("%: %", token.text, token.type);
     // assert(token.text.count != 0);
     
-    if is_atom(token.type) || is_op(token.type) expr = make_atom(token);
+    if is_atom(token.type) || is_op(token.type)
+    then expr = make_atom(token);
     else if token.type == {
     case .ERR; return null, false;
     case .EOF; return null, true;
-    case; assert(false, "TODO: handle %", token);
+    case; {
+        log_error("TODO: nice error message for %", token);
+        return null, false;
+    }
     }
     
     token = peek(tokens);
@@ -493,7 +494,8 @@ parse_expr :: (tokens: *Tokenizer) -> *Expr, eof: bool {
                 }
                 
                 tokens.peeking = false;
-                e := parse_expr(tokens);
+                e, eof := parse_expr(tokens);
+                if eof return null, true;
                 if !e {
                     for ast: args {
                         for ast free_expr(it);
@@ -536,7 +538,7 @@ parse_expr :: (tokens: *Tokenizer) -> *Expr, eof: bool {
         // eep! this is very janky whoops TODO
         if expr.as.call.args {
             last := expr.as.call.args[expr.as.call.args.count-1];
-            last[last.count-1].text.count -= 1;
+            if last last[last.count-1].text.count -= 1;
         } else {
             expr.as.call.head.count -= 2;
         }
@@ -645,8 +647,7 @@ init_call :: (expr: *Expr, head: Repr, args: []Ast) {
     
     if args {
         last := args[args.count-1];
-        assert(last.count > 0);
-        expr.repr = join(head, last[last.count-1].repr);
+        if last then expr.repr = join(head, last[last.count-1].repr);
     } else {
         expr.repr = head;
         expr.location.character_number_end += 2;
@@ -800,7 +801,7 @@ peek :: (using tokens: *Tokenizer) -> Token {
         token.text.count += 1;
         if !NotEof() ||  token.text[token.text.count-1] == #char "\n" {
             log_error("unterminated string literal");
-            Yield(.ERR);     
+            Yield(.ERR);
         } else if token.text[token.text.count-1] == #char "\"" {
             Yield(.STR);
         }

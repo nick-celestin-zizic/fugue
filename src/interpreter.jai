@@ -1,18 +1,7 @@
-Variables :: struct {
-    buffer   : []u8;
-    bindings : Table(string, int);
-}
-
-Virtual_Machine :: struct {
-    regs_top := 0; // index to top register
-    vars_top := 0; // index to top of variable buffer
-    // TODO: differentiate local and global scope
-    bindings: Table(string, int); // name -> index to start in var_buf
-    regs: [32]int;
-    vars: [512]u8;
-    output: String_Builder;
-    // tape: []FWord;
-}
+// Variables :: struct {
+//     buffer   : []u8;
+//     bindings : Table(string, int);
+// }
 
 interpret_program :: (program: *Program) -> bool {
     vm: Virtual_Machine;
@@ -27,12 +16,17 @@ interpret_program :: (program: *Program) -> bool {
     return interpret_words(*vm, *program.words, words);
 }
 
-interpret_words :: (vm: *Virtual_Machine, dict: *FDict, ws: []FWord) -> bool {
+interpret_words :: (vm: *Virtual_Machine, dict: *FDict, ws: []FWord, timeout_seconds := 5.0) -> bool {
     if !ws return true;
+    start := current_time_seconds();
     ip := 0;
     while ip < ws.count {
         ip = interpret_word(vm, dict, ip, ws);
         if ip < 0 return false;
+        if (current_time_seconds() - start) > timeout_seconds {
+            log_error("Program timed out!");
+            return false;
+        }
     }
     return true;
 }
@@ -44,6 +38,7 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
     //     log("\n%: % => %", ip, word.*, xs);
     // }
     if #complete word.type == {
+    case .HOLE; return ip + 1; // no-op
     case .JMP; return word.as.jmp;
     case .JIF; {
         if regs_top < 1 assert(false, "register stack underflow");
@@ -59,6 +54,7 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
     case .PUSH_STR; {
         if regs_top >= regs.count-1 assert(false, "register stack overflow");
         // TODO: copy into string storage and escape stuff
+        // log("PUSH_STR(%)", word.as.push_str);
         regs[regs_top]   = word.as.push_str.count - 2;
         regs[regs_top+1] = cast,force(int) (word.as.push_str.data + 1);
         
@@ -68,6 +64,12 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
     case .ADD; {
         if regs_top < 2 assert(false, "register stack underflow");
         regs[regs_top-2] = regs[regs_top-2] + regs[regs_top-1];
+        regs_top -= 1;
+        return ip + 1;
+    }
+    case .SUB; {
+        if regs_top < 2 assert(false, "register stack underflow");
+        regs[regs_top-2] = regs[regs_top-2] - regs[regs_top-1];
         regs_top -= 1;
         return ip + 1;
     }
@@ -126,25 +128,36 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
         assert(word.as.put_var.type[0].type == .PUSH_TYPE);
         t := word.as.put_var.type[0].as.push_type;
         v := vars_top;
-        if t.type != .STK {
-            (cast(*int)(vars.data+vars_top)).* = regs[regs_top-1];
-            vars_top += size_of(int);
-            regs_top -= 1;
-        } else for t.as.stk {
-            (cast(*int)(vars.data+v+it.offset)).* = regs[regs_top-1];
-            vars_top += xx runtime_size(it.type);
+        // push :: (t: *FType, data: *u8, vars_top: *int, regs_top: *int, regs: []int) {
+        size := runtime_size(t);
+        if t.type == .STK {
+            push_type_stack_onto_variable_stack_from_register_stack(vm, t.as.stk);
+            vars_top += size;
+        } else {
+            assert(size <= size_of(int));
+            memcpy(vars.data+vars_top, *regs[regs_top-1], size);
+            vars_top += size;
             regs_top -= 1;
         }
+        // }
+        // push(t, vars.data, *vars_top, *regs_top, regs);
         return ip + 1;
     }
     case .ROT; {
         assert(word.as.rot > 0);
-        if word.as.rot != 1 assert(false, "TODO");
-        if regs_top < 2 assert(false, "register stack underflow");
-        a := regs[regs_top-1];
-        b := regs[regs_top-2];
-        regs[regs_top-1] = b;
-        regs[regs_top-2] = a;
+        assert(regs_top >= word.as.rot+1, "register stack underflow % %", regs_top, word.as.rot);
+        if word.as.rot == 1 {
+            a := regs[regs_top-1];
+            b := regs[regs_top-2];
+            regs[regs_top-1] = b;
+            regs[regs_top-2] = a;
+        } else {
+            rs: []int = .{regs_top, xx regs.data};
+            begin := rs.count-1-word.as.rot;
+            first := rs[begin];
+            for begin..rs.count-2 rs[it] = rs[it+1];
+            rs[rs.count-1] = first;
+        }
         return ip + 1;
     }
     case .DUP; {
@@ -166,6 +179,12 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
             if regs_top < 1 assert(false, "register stack underflow");
             regs_top -= 1;
         }
+        return ip + 1;
+    }
+    case .OVER; {
+        if regs_top >= regs.count assert(false, "register stack overflow");
+        regs[regs_top] = regs[regs_top-1-word.as.over];
+        regs_top += 1;
         return ip + 1;
     }
     case .MACRO; {
@@ -230,5 +249,20 @@ interpret_word :: (using vm: *Virtual_Machine, dict: *FDict, ip: int, words: []F
     case;
         assert(false, "corrupt word type %", cast(int) word.type);
         return -1;
+    }
+}
+
+// WARNING: it is on you to vars_top += size; after calling this because i don't want to make another wrapper for the recursion
+push_type_stack_onto_variable_stack_from_register_stack :: (using vm: *Virtual_Machine, stk: Type_Stack) {
+    for < stk {
+        if it.type.type == .STK {
+            PushState(vars_top, vars_top+it.offset);
+            push_type_stack_onto_variable_stack_from_register_stack(vm, it.type.as.stk);
+        } else {
+            // TODO: sanity check for buffer overrun
+            assert(vars.data+vars_top+it.offset < xx (vars.data+vars.count));
+            memcpy(vars.data+vars_top+it.offset, *regs[regs_top-1], runtime_size(it.type));
+            regs_top -= 1;
+        }
     }
 }

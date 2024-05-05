@@ -1,6 +1,8 @@
 def main
     0 while dup(2) 5 < do
-        puti 32 putc 1 +
+        puti
+        32 putc
+        1 +
     end
     var(local) drop
     

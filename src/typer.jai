@@ -62,13 +62,6 @@ operator == :: (a: FType, b: FType) -> bool {
     return true;
 }
 
-Type_Stack :: []Type_Stack_Item;
-Type_Stack_Item :: struct {
-    type   : *FType;
-    name   : string; // "" for name is equal to using in jai
-    offset : u32;
-}
-
 Type_Builder :: struct {
     current_offset : u32 = 0;
     types          : [..]Type_Stack_Item;
@@ -77,6 +70,7 @@ Type_Builder :: struct {
 }
 
 build_type :: (using tb: *Type_Builder, typer: *Typer, word: TWord) -> bool {
+    // defer log("build_type(%) => %", word, types);
     if #complete word.type == {
     case .PUSH_TYPE;
         array_add(*types, .{word.as.push_type, "", current_offset});
@@ -135,32 +129,18 @@ runtime_size :: (t: FType) -> u32 {
     return 0;
 }
 
-
-Typer :: struct {
-    global_scope : Table(string, Type_Stack_Item);
-    local_scope  : Locals;
-    type_stack   : [..]*FType;
-    stacks       : [..][]*FType;
-    backpatches  : Table(u32, u32); // dst -> src (indices into stacks)
-    // last_ip      := -1;
-    // stacks       : Table(u32, Tuple([]*FType, int));
-    // pointer_type_cache := Table(*FType, *FType).{allocator=temp};
-    // buffer_type_cache  := Table(struct{p:*FType;c:int;}, *FType).{allocator=temp};
-}
-
 push_stack :: (using,only(stacks, type_stack) typer: *Typer) {
-    // log("%", stacks);
     if stacks.count >= stacks.allocated {
         reserve := 2 * stacks.allocated;
         if reserve < 8 then reserve = 8;
         array_reserve(*stacks, reserve);
         stacks.count += 1;
-        stacks[stacks.count-1] = array_copy(type_stack);
+        stacks[stacks.count-1] = ifx type_stack then array_copy(type_stack) else .[];
     } else {
         stacks.count += 1;
-        if stacks[stacks.count-1].data != null {
+        if stacks[stacks.count-1].data != null
+        && (stacks[stacks.count-1].count < type_stack.count) {
             array_resize(*stacks[stacks.count-1], type_stack.count, false);
-            // log("    % %", stacks[stacks.count-1].data, type_stack);
             if type_stack memcpy(
                 stacks[stacks.count-1].data, type_stack.data,
                 type_stack.count*size_of(type_of(type_stack[0]))
@@ -168,7 +148,6 @@ push_stack :: (using,only(stacks, type_stack) typer: *Typer) {
         } else {
             stacks[stacks.count-1] = array_copy(type_stack);
         }
-        // log("    % %", stacks[stacks.count-1], type_stack);
     }
 }
 
@@ -209,27 +188,28 @@ typecheck_program :: (program: *Program) -> Typer, bool {
     // so that we can have composed types that were defined out of order
     for * program.types {
         t := eval_type(*typer, *program.types, it.*);
-        if t {
+        Try(xx t);
+        // if t {
             it.count = 1;
             it.*[0]  = .{type=.PUSH_TYPE, as.push_type=t};
-        }
+        // }
     }
     
     // type metaprogram and save global variable types
-    Check(type_words(*typer, *program.types, *program.words, program.loose));
-    typer.global_scope = typer.local_scope.bindings;
-    typer.local_scope.bindings = .{};
-    reset_stacks(*typer);
-    global_offset := typer.local_scope.current_offset;
+    Try(type_words(*typer, *program.types, *program.words, program.loose));
     if typer.type_stack.count != 0 {
         log_error("unhandled items on the stack! %", typer.type_stack);
         return .{}, false;
     }
     assert(typer.backpatches.count == 0);
+    typer.global_scope = typer.local_scope.bindings;
+    typer.local_scope.bindings = .{};
+    reset_stacks(*typer);
+    global_offset := typer.local_scope.current_offset;
     
     body, ok := table_find(*program.words, "main");
-    Check(ok, "You did not define main!");
-    Check(type_words(*typer, *program.types, *program.words, body));
+    Try(ok, "You did not define main!");
+    Try(type_words(*typer, *program.types, *program.words, body));
     if typer.type_stack.count != 0 {
         log_error("unhandled items on the stack! %", typer.type_stack);
         return .{}, false;
@@ -242,19 +222,16 @@ typecheck_program :: (program: *Program) -> Typer, bool {
     return typer, true;
 }
 
-Locals :: struct {
-    current_offset : u32 = 0;
-    bindings: Table(string, Type_Stack_Item);
-}
-
 type_words :: (
     typer: *Typer, types: *TDict,
     words: *FDict, tape: []FWord
 ) -> bool {
+    // log("words: %", tape);
+    // log("input type: %", typer.type_stack);
     for * tape {
-        // log("!!!!!!!! %", it_index);
         if !type_word(typer, types, words, it, xx it_index) return false;
     }
+    // log("output type: %", typer.type_stack);
     return true;
 }
 
@@ -268,26 +245,29 @@ stacks_match :: (using typer: *Typer, this: u32, that: u32) -> bool {
     a := stacks[this];
     b := ifx that then stacks[that-1] else .[];
     using Short_Circuit_Macros(#code {
-        assert(false, "[%] % ?= [%] %\n\n%", this, a, that, b, stacks);
+        // assert(false, "[%] % ?= [%] %\n\n%", this, a, that, b, stacks);
+        log_error("Type stacks do not match between jump source and destination:");
+        log_error("(%) source:      %", this, a);
+        log_error("(%) destination: %", ifx that that-1, b);
         return false;
     }).{};
-    Check(a.count == b.count);
-    for a Check(it == b[it_index]);
+    Try(a.count == b.count);
+    for a Try(it == b[it_index]);
     return true;
 }
 
 // TODO: move locals and type stack into typer so that we can call it from the debugger
 type_word :: (using typer: *Typer, types: *TDict, words: *FDict, word: *FWord, ip: u32) -> bool {
-    using Short_Circuit_Macros(#code { assert(false, "%", type_stack); return false; }).{};
-    Pop :: (caller := #caller_code) -> *FType #expand {
-        Check(type_stack.count > 0, "Type stack underflow!", caller=caller);
+    using Short_Circuit_Macros(#code { return false; }).{};
+    Pop :: (scope := #caller_code, loc := #caller_location) -> *FType #expand {
+        Try(type_stack.count > 0, "Type stack underflow!", scope=scope, loc=loc);
         a := type_stack[type_stack.count-1];
         type_stack.count -= 1;
         return a;
     }
     
     // log("??? % %", ip, word.*);
-    // defer log("[%] % => %", ip, word.*, type_stack);
+    defer log("typer: [%] % => %", ip, word.*, type_stack);
     
     // check if there is a backpatch needed
     // i.e the type stack after tape[patch] is typed should be
@@ -296,15 +276,16 @@ type_word :: (using typer: *Typer, types: *TDict, words: *FDict, word: *FWord, i
     if needs_check {
         assert(patch < ip);
         // log("% % % %", patch, ip, stacks.count, type_stack);
-        Check(stacks_match(typer, patch, ip));
+        Try(stacks_match(typer, patch, ip));
         table_remove(*backpatches, ip);
     }
     
     if #complete word.type == {
+    case .HOLE; Throw("Hole type: %", type_stack);
     case .LT; #through;
     case .GT; {
-        a := Pop(); Check(a.type == .NUM, "expected int but got %", a);
-        b := Pop(); Check(b.type == .NUM, "expected int but got %", b);
+        a := Pop(); Try(a.type == .NUM, "expected int but got %", a);
+        b := Pop(); Try(b.type == .NUM, "expected int but got %", b);
         array_add(*type_stack, *TYPE_BUL);
     }
     // TODO: we need a way to check that the src and dst for the jumps have the same type stack
@@ -313,7 +294,7 @@ type_word :: (using typer: *Typer, types: *TDict, words: *FDict, word: *FWord, i
         
         push_stack(typer);
         if word.as.jmp < ip
-        then Check(stacks_match(typer, ip, word.as.jmp));
+        then Try(stacks_match(typer, ip, word.as.jmp));
         else table_add(*backpatches, word.as.jmp, ip);
         
         patch, needs_check = table_find(*backpatches, ip+1);
@@ -324,31 +305,27 @@ type_word :: (using typer: *Typer, types: *TDict, words: *FDict, word: *FWord, i
     }
     case .JIF; {
         a := Pop();
-        Check(a.type == .BUL, "expected bool but got %", a);
+        Try(a.type == .BUL, "expected bool but got %", a);
         assert(word.as.jif != ip);
         if word.as.jif < ip {
             // we need to push the stack rn so that we can compare properly
             push_stack(typer);
-            Check(stacks_match(typer, ip, word.as.jif));
+            Try(stacks_match(typer, ip, word.as.jif));
             return true;
         } else table_add(*backpatches, word.as.jif, ip);
-        // if word.as.jif < ip 
-        // then Check(stacks_match(typer, word.as.jif));
-        // else { table_add(*backpatches, word.as.jif, cast(u32) ip); log("added patch to %", ip); }
     }
-    
     case .PUSH_INT; array_add(*type_stack, *TYPE_INT);
     case .PUSH_STR; array_add(*type_stack, *TYPE_INT, *TYPE_ADR);
-    case .ADD; #through; case .DIV; {
-        a := Pop(); Check(a.type == .NUM, "expected int but got %", a);
-        b := Pop(); Check(b.type == .NUM, "expected int but got %", b);
+    case .ADD; #through; case .SUB; #through; case .DIV; {
+        a := Pop(); Try(a.type == .NUM, "expected int but got %", a);
+        b := Pop(); Try(b.type == .NUM, "expected int but got %", b);
         array_add(*type_stack, *TYPE_INT);
     }
     case .SIZE_OF_TYPE; {
         // we technically leak the the []TWord on word.as.size_of_type,
         // this is dumb.
         t := eval_type(typer, types, word.as.size_of_type);
-        Check(t != null);
+        Try(t != null);
         word.* = .{type=.PUSH_INT, as.push_int=runtime_size(t)};
         array_add(*type_stack, *TYPE_INT);
     }
@@ -357,7 +334,7 @@ type_word :: (using typer: *Typer, types: *TDict, words: *FDict, word: *FWord, i
         if a.type == {
         case .STK; assert(false, "%", a.as.stk);
         case .PTR; push_type(*type_stack, a.as.ptr); word.as.get = a.as.ptr;
-        case; Fail("expected ptr type but got %", a.type);
+        case; Throw("expected ptr type but got %", a.type);
         }
     }
     case .PUT; assert(false, "TODO: PUT");
@@ -380,12 +357,12 @@ type_word :: (using typer: *Typer, types: *TDict, words: *FDict, word: *FWord, i
         } else if type.count == 1 && type[0].type == .PUSH_TYPE {
             // type was already resolved or is simple enough not to need resolution
             t = type[0].as.push_type;
-            Check(pop_type(*type_stack, t));
+            Try(pop_type(*type_stack, t));
         } else {
             // evaluate type expression and cache the type
             t = eval_type(typer, types, type);
-            Check(t != null);
-            Check(pop_type(*type_stack, t));
+            Try(t != null);
+            Try(pop_type(*type_stack, t));
             type.count = 1;
             type[0] = .{type=.PUSH_TYPE, as.push_type=t};
         }
@@ -394,11 +371,22 @@ type_word :: (using typer: *Typer, types: *TDict, words: *FDict, word: *FWord, i
     }
     case .ROT; {
         assert(word.as.rot > 0);
-        if word.as.rot != 1 assert(false, "TODO: rot(%)", word.as.rot);
-        a := Pop();
-        b := Pop();
-        push_type(*type_stack, a);
-        push_type(*type_stack, b);
+        if word.as.rot == 1 {
+            a := Pop();
+            b := Pop();
+            push_type(*type_stack, a);
+            push_type(*type_stack, b);
+        } else {
+            len := word.as.rot+1;
+            Try(len <= type_stack.count,
+                "rot(%) expects % items on the stack, but there are only %", word.as.rot, len, type_stack.count);
+            begin := type_stack.count-len;
+            first := type_stack[begin];
+            for begin..type_stack.count-2 type_stack[it] = type_stack[it+1];
+            type_stack[type_stack.count-1] = first;
+            // log_error("after %", view);
+            // Throw("TODO: rot(%)", word.as.rot);
+        }
     }
     case .DUP; {
         assert(word.as.dup > 0);
@@ -409,37 +397,52 @@ type_word :: (using typer: *Typer, types: *TDict, words: *FDict, word: *FWord, i
         assert(word.as.drop > 0);
         for 1..word.as.drop Pop();
     }
+    case .OVER; {
+        assert(word.as.over > 0);
+        len := word.as.over+1;
+        Try(len <= type_stack.count,
+            "over(%) expects % items on the stack, but there are only %", word.as.over, len, type_stack.count);
+        push_type(*type_stack, type_stack[type_stack.count-len]);
+    }
     case .MACRO; using word.as.macro; {
         assert(call.body.count != 0, "internal compiler error: unresolved macro %", name);
         // log("MACRO START");
-        Check(type_words(typer, types, words, call.body));
+        Try(type_words(typer, types, words, call.body));
         // log("MACRO END");
     }
     case .CALL; {
         body, ok := table_find(words, word.as.call);
-        Check(ok, "undefined word %", word.as.call);
+        Try(ok, "undefined word %", word.as.call);
         // TODO: we need to have seperate local scope!!!!
-        Check(type_words(typer, types, words, body));
+        
+        // stk: [..]*FType; stk.allocator = temp;
+        // PushState(typer.type_stack, stk);
+        
+        stks: [..][]*FType; stks.allocator = temp;
+        PushState(typer.stacks, stks);
+        Try(type_words(typer, types, words, body));
     }
-    case .PUTC; a := Pop(); Check(a.type == .NUM, "expected int but got %", a);
-    case .PUTB; a := Pop(); Check(a.type == .BUL, "expected bool but got %", a);
-    case .PUTI; a := Pop(); Check(a.type == .NUM, "expected int but got %", a);
-    case .PUTA; a := Pop(); Check(a.type == .ADR || a.type == .PTR, "expected addr or ptr but got %", a);
+    case .PUTC; a := Pop(); Try(a.type == .NUM, "expected int but got %", a);
+    case .PUTB; a := Pop(); Try(a.type == .BUL, "expected bool but got %", a);
+    case .PUTI; a := Pop(); Try(a.type == .NUM, "expected int but got %", a);
+    case .PUTA; a := Pop(); Try(a.type == .ADR || a.type == .PTR, "expected addr or ptr but got %", a);
     case .PUTS; {
-        data  := Pop(); Check(data.type == .ADR, "expected addr but got %", data);
-        count := Pop(); Check(count.type == .NUM, "expected int but got %", count);
+        data  := Pop(); Try(data.type == .ADR, "expected addr but got %", data);
+        count := Pop(); Try(count.type == .NUM, "expected int but got %", count);
     }
     case .CASTT; {
         t := Pop();
         t  = eval_type(typer, types, word.as.castt);
-        Check(t != null);
+        Try(t != null);
         array_add(*type_stack, t);
     }
     case .NAME; assert(false, "internal compiler error: unresolved name %", word.as.name);
     case;
     }
     
+    // log("before push_stack %", type_stack);
     push_stack(typer);
+    // log("after push_stack %", type_stack);
     return true;
 }
 
@@ -453,11 +456,14 @@ eval_type :: (using typer: *Typer, types: *TDict, words: []TWord) -> *FType {
     
     for words if it.type == {
         case .NAME; {
-            ts, ok := table_find(types, it.as.name);
-            Check(ok, "type % is not defined", it.as.name);
-            for ts Check(build_type(*tb, typer, it));
+            ws, ok := table_find(types, it.as.name);
+            Try(ok, "type % is not defined", it.as.name);
+            type := eval_type(typer, types, ws);
+            Try(xx type);
+            array_add(*tb.types, .{type, "", tb.current_offset});
+            tb.current_offset += runtime_size(type);
         }
-        case; Check(build_type(*tb, typer, it));
+        case; Try(build_type(*tb, typer, it));
     }
     
     t := builder_to_type(typer, *tb);
@@ -485,7 +491,7 @@ push_type :: (type_stack: *[..]*FType, type: *FType) -> bool {
 pop_type :: (type_stack: *[]*FType, type: *FType) -> bool {
     Pop :: () -> FType #expand {
         if type_stack.count < 1 {
-            log_error("type stack undeflow!!");
+            log_error("type stack undeflow!! expected %, but got nothing!", type.*);
             `return false;
         }
         a := type_stack.*[type_stack.count-1];
@@ -493,11 +499,9 @@ pop_type :: (type_stack: *[]*FType, type: *FType) -> bool {
         return a;
     }
     
-    // log("    popping % %", runtime_size(type), type);
-    
     if type.type == .STK {
         // log("stack %", type.as.stk);
-        for type.as.stk  if !pop_type(type_stack, it.type) return false;
+        for type.as.stk if !pop_type(type_stack, it.type) return false;
         return true;
     } else {
         a := Pop();
