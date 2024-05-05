@@ -26,19 +26,6 @@ return_space: U128; // 16 byte so that we can fit strings and stuff
     }
     
     run(#string __python
-    def foo 1 puti end
-    def putln "<br>" puts end
-    def main
-        0 while dup 10 < do
-            foo
-            1 +
-        end drop
-    end
-    __python);
-    
-    if true return;
-    
-    run(#string __python
     def putln "<br>" puts end
     def main
         10 var(width)

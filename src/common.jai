@@ -89,7 +89,7 @@ Program :: struct {
 }
 
 
-// TODO: we need this shit if we actually want to do a proper debugger whoopsie
+// TODO: These should be the structures we use and Typer should not persist past load()
 
 // Procedure :: struct {
 //     body: []FWord;    // View into flattenned program tape
@@ -104,16 +104,15 @@ Program :: struct {
 //     tapes: []TWord;
 // }
 
-Virtual_Machine :: struct {
-    ip: int;
-    regs_top := 0; // index to top register
-    vars_top := 0; // index to top of variable buffer
-    regs: [32]int;
-    vars: [512]u8;
-    output: String_Builder;
-    
-    call_stack: [..]string;
-}
+// Virtual_Machine :: struct {
+//     ip: int;
+//     regs_top := 0; // index to top register
+//     vars_top := 0; // index to top of variable buffer
+//     regs: [32]int;
+//     vars: [512]u8;
+//     output: String_Builder;
+//     call_stack: [..]string;
+// }
 
 
 

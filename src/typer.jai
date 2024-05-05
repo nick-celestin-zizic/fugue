@@ -266,8 +266,7 @@ type_word :: (using typer: *Typer, types: *TDict, words: *FDict, word: *FWord, i
         return a;
     }
     
-    // log("??? % %", ip, word.*);
-    defer log("typer: [%] % => %", ip, word.*, type_stack);
+    // defer log("typer: [%] % => %", ip, word.*, type_stack);
     
     // check if there is a backpatch needed
     // i.e the type stack after tape[patch] is typed should be
